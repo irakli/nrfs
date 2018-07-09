@@ -29,6 +29,8 @@ size_t vector_length(const vector *vector);
 
 void *vector_nth(const vector *vector, int position);
 
+void *vector_last(const vector *vector);
+
 void vector_insert(vector *vector, const void *elem, int position);
 
 void vector_append(vector *vector, const void *elem);

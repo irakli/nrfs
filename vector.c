@@ -44,6 +44,11 @@ void *vector_nth(const vector *vector, int position)
 	return (char *)vector->elems + vector->elem_size * position;
 }
 
+void *vector_last(const vector *vector)
+{
+	return vector_nth(vector, vector_length(vector) - 1);
+}
+
 void vector_replace(vector *vector, const void *elem, int position)
 {
 	assert(position >= 0 && position < vector->logical_length);

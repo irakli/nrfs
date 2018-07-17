@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <assert.h>
+#include <search.h>
 
 #define DEFAULT_ALLOCATION_SIZE 4
 

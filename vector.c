@@ -109,7 +109,7 @@ void vector_map(vector *vector, map_fn map, void *aux)
 		map((char *)vector->elems + vector->elem_size * i, aux);
 }
 
-static void grow(vector *vector)
+void grow(vector *vector)
 {
 	vector->allocated_length += vector->initial_allocation;
 	vector->elems = realloc(vector->elems, vector->allocated_length * vector->elem_size);

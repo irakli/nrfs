@@ -1,221 +1,252 @@
-#include <fuse.h>
+#include "raid.h"
 #include <stdio.h>
-#include <stdlib.h>
+#include <sys/types.h>
+#include <sys/socket.h>
 #include <string.h>
+#include <netinet/in.h>
+#include <netinet/ip.h> /* superset of previous */
+#include <arpa/inet.h>
+#include <unistd.h>
+#include <stdlib.h>
 #include <errno.h>
-#include <fcntl.h>
-#include "vector.h"
+#include <pthread.h>
 
-#define MAX_NAME_LENGTH 128
-#define MAX_PATH_LENGTH 256
-#define MAX_IP_LENGTH 24 // 255.255.255.255:65535 (22)
+#define BACKLOG 16
 
-struct client_config
+struct server_config
 {
-	char error_log[MAX_PATH_LENGTH];
-	char cache_size[16];
-	char cache_replacement[16];
-	int timeout;
-};
-
-struct raid_storage
-{
-	int raid;
-	char disk_name[MAX_NAME_LENGTH];
 	char mount_point[MAX_PATH_LENGTH];
-	char hot_swap[MAX_IP_LENGTH];
-	vector servers;
+	char ip[MAX_IP_LENGTH];
+	int port;
 };
 
-void parse_config(const char *config_file, vector *storages, struct client_config *config)
+static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
-	FILE *file = fopen(config_file, "r");
-	if (file == NULL)
+	int result = 0;
+
+	memset(stbuf, 0, sizeof(struct stat));
+	if (strcmp(path, "/") == 0)
 	{
-		fprintf(stderr, "%s\n", "Can't read provided file");
+		stbuf->st_mode = S_IFDIR | 0755;
+		stbuf->st_nlink = 2;
+	}
+	else
+		result = lstat(path, stbuf);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_mknod(const char *path, mode_t mode, dev_t dev)
+{
+	int result = mknod(path, mode, dev);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_mkdir(const char *path, mode_t mode)
+{
+	int result = mkdir(path, mode);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_unlink(const char *path)
+{
+	int result = unlink(path);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_rmdir(const char *path)
+{
+	int result = rmdir(path);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_rename(const char *path, const char *new_path)
+{
+	int result = rename(path, new_path);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_link(const char *path, const char *new_path)
+{
+	int result = link(path, new_path);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+	(void)fi;
+	int result = chmod(path, mode);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi)
+{
+	(void)fi;
+	int result = chown(path, uid, gid);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
+{
+	(void)fi;
+	int result = truncate(path, offset);
+
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_open(const char *path, struct fuse_file_info *fi)
+{
+	int fd = open(path, fi->flags);
+
+	if (fd < 0)
+		return -errno;
+
+	fi->fh = fd;
+
+	return 0;
+}
+
+static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
+{
+	int result;
+
+	/* We can just call pread with fi->fh because at this point open syscall should be called and fh will be set. */
+	result = pread(fi->fh, buffer, size, offset);
+	if (result < 0)
+		return -errno;
+	return 0;
+}
+
+static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
+{
+	int result;
+
+	/* We can just call pwrite with fi->fh because at this point open syscall should be called and fh will be set. */
+	result = pwrite(fi->fh, buffer, size, offset);
+	if (result < 0)
+		return -errno;
+
+	return 0;
+}
+
+static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
+
+static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
+
+static int net_release(const char *path, struct fuse_file_info *fi) { return 0; }
+
+static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) { return 0; }
+
+static int net_getxattr(const char *path, const char *name, const char *value, size_t size) { return 0; }
+
+static int net_opendir(const char *path, struct fuse_file_info *fi) { return 0; }
+
+static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) { return 0; }
+
+static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
+
+static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) { return 0; }
+
+static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
+
+void *client_handler(void *cf)
+{
+	int cfd = *(int *)cf;
+	struct request req;
+
+	while (1)
+	{
+		size_t data_size = read(cfd, &req, 1024);
+		if (data_size <= 0)
+			break;
+		printf("%s\n", (char *)req.syscall);
+		// write(cfd, &buf, data_size);
+	}
+	close(cfd);
+
+	return NULL;
+}
+
+int main(int argc, char *argv[])
+{
+	if (argc <= 3)
+	{
+		fprintf(stderr, "%s\n", "Usage: ./server [ip] [port] [dir]");
 		exit(EXIT_FAILURE);
 	}
-	char line[256];
 
-	/* Error log. */
-	fgets(line, sizeof(line), file);
-	line[strlen(line) - 1] = '\0';
-	strncpy(config->error_log, line + strlen("errorlog = "), strlen(line) - strlen("errorlog = ") + 1);
+	struct server_config config;
+	strcpy(config.ip, argv[1]);
+	strcpy(config.mount_point, argv[3]);
+	config.port = atoi(argv[2]);
 
-	/* Cache size. */
-	fgets(line, sizeof(line), file);
-	line[strlen(line) - 1] = '\0';
-	strncpy(config->cache_size, line + strlen("cache_size = "), strlen(line) - strlen("cache_size = ") + 1);
+	fprintf(stdout, "%s\n", "Starting up a server...");
+	fprintf(stdout, "%s\n", config.ip);
+	fprintf(stdout, "%s\n", config.mount_point);
+	fprintf(stdout, "%d\n", config.port);
 
-	/* Cache replacement algorithm. */
-	fgets(line, sizeof(line), file);
-	line[strlen(line) - 1] = '\0';
-	strncpy(config->cache_replacement, line + strlen("cache_replacment = "), strlen(line) - strlen("cache_replacment = ") + 1);
+	int sfd, cfd;
 
-	/* Timeout. */
-	fgets(line, sizeof(line), file);
-	line[strlen(line) - 1] = '\0';
-	config->timeout = atoi(line + strlen("timeout = "));
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(config.port);
+	addr.sin_addr.s_addr = inet_addr(config.ip);
 
-	while (fgets(line, sizeof(line), file))
+	struct sockaddr_in peer_addr;
+	int optval = 1;
+
+	sfd = socket(AF_INET, SOCK_STREAM, 0);
+	setsockopt(sfd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(int));
+	bind(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	listen(sfd, BACKLOG);
+
+	while (1)
 	{
-		/* Remove trailing newline character if it exists. */
-		size_t len = strlen(line);
-		if (len > 0 && line[len - 1] == '\n')
-			line[--len] = '\0';
+		socklen_t size = sizeof(struct sockaddr_in);
+		cfd = accept(sfd, (struct sockaddr *)&peer_addr, &size);
 
-		/* Disk name. */
-		if (strncmp(line, "diskname", strlen("diskname")) == 0)
-		{
-			struct raid_storage *storage = malloc(sizeof(struct raid_storage));
-			vector_new(&storage->servers, MAX_IP_LENGTH, NULL, 2);
-
-			strncpy(storage->disk_name, line + strlen("diskname = "), strlen(line) - strlen("diskname = "));
-			vector_append(storages, storage);
-		}
-
-		/* Mount point. */
-		if (strncmp(line, "mountpoint", strlen("mountpoint")) == 0)
-		{
-			struct raid_storage *storage = vector_last(storages);
-			strncpy(storage->mount_point, line + strlen("mountpoint = "), strlen(line) - strlen("mountpoint = "));
-		}
-
-		/* Hotswap. */
-		if (strncmp(line, "hotswap", strlen("hotswap")) == 0)
-		{
-			struct raid_storage *storage = vector_last(storages);
-			strncpy(storage->hot_swap, line + strlen("hotswap = "), strlen(line) - strlen("hotswap = "));
-		}
-
-		/* RAID. */
-		if (strncmp(line, "raid", strlen("raid")) == 0)
-		{
-			struct raid_storage *storage = vector_last(storages);
-			storage->raid = atoi(line + strlen("raid = "));
-		}
-
-		/* Server list. */
-		if (strncmp(line, "servers", strlen("servers")) == 0)
-		{
-			struct raid_storage *storage = vector_last(storages);
-			char *ip = strtok(line + strlen("servers = "), ", ");
-			while (ip != NULL)
-			{
-				vector_append(&storage->servers, strdup(ip));
-				ip = strtok(NULL, ", ");
-			}
-		}
+		pthread_t p;
+		pthread_create(&p, NULL, &client_handler, &cfd);
 	}
-
-	fclose(file);
-}
-
-void print_fn(void *elem, void *aux)
-{
-	fprintf(stdout, "%s\n", (char *)elem);
-}
-
-static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi) {}
-
-static int net_mknod(const char *path, mode_t mode, dev_t dev) {}
-
-static int net_mkdir(const char *path, mode_t mode) {}
-
-static int net_unlink(const char *path) {}
-
-static int net_rmdir(const char *path) {}
-
-static int net_rename(const char *path, const char *new_path) {}
-
-static int net_link(const char *path, const char *new_path) {}
-
-static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) {}
-
-static int net_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) {}
-
-static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi) {}
-
-static int net_open(const char *path, struct fuse_file_info *fi) {}
-
-static int net_read(const char *path, struct fuse_file_info *fi) {}
-
-static int net_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *fi) {}
-
-static int net_statfs(const char *path, struct statvfs *statv) {}
-
-static int net_flush(const char *path, struct fuse_file_info *fi) {}
-
-static int net_release(const char *path, struct fuse_file_info *fi);
-
-static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) {}
-
-static int net_getxattr(const char *path, const char *name, const char *value, size_t size) {}
-
-static int net_opendir(const char *path, struct fuse_file_info *fi) {}
-
-static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) {}
-
-static int net_releasedir(const char *path, struct fuse_file_info *fi) {}
-
-static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) {}
-
-static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg)
-{
-}
-
-struct fuse_operations net_oper = {
-	.getattr = net_getattr,
-	.mknod = net_mknod,
-	.mkdir = net_mkdir,
-	.unlink = net_unlink,
-	.rmdir = net_rmdir,
-	.rename = net_rename,
-	.link = net_link,
-	.chmod = net_chmod,
-	.chown = net_chown,
-	.truncate = net_truncate,
-	.open = net_open,
-	.read = net_read,
-	.write = net_write,
-	.statfs = net_statfs,
-	.flush = net_flush,
-	.release = net_release,
-	.setxattr = net_setxattr,
-	.getxattr = net_getxattr,
-
-	.opendir = net_opendir,
-	.readdir = net_readdir,
-	.releasedir = net_releasedir,
-	.create = net_create,
-	.init = net_init,
-};
-
-int main(int argc, char const *argv[])
-{
-	if (argc <= 1)
-	{
-		fprintf(stderr, "%s\n", "Please provide a configuration file");
-		exit(EXIT_FAILURE);
-	}
-
-	vector storages;
-	struct client_config config;
-
-	vector_new(&storages, sizeof(struct raid_storage), NULL, 2);
-	parse_config((char *)argv[1], &storages, &config);
-
-	fprintf(stdout, "%s\n", config.error_log);
-	fprintf(stdout, "%s\n", config.cache_size);
-	fprintf(stdout, "%s\n", config.cache_replacement);
-	fprintf(stdout, "%d\n", config.timeout);
-
-	struct raid_storage *s = vector_last(&storages);
-	fprintf(stdout, "%s\n", s->disk_name);
-	fprintf(stdout, "%s\n", s->mount_point);
-	fprintf(stdout, "%s\n", s->hot_swap);
-	fprintf(stdout, "%d\n", s->raid);
-	vector_map(&s->servers, &print_fn, NULL);
+	close(sfd);
 
 	return 0;
 }

@@ -45,6 +45,6 @@ void vector_sort(vector *vector, cmp_fn cmp);
 
 void vector_map(vector *vector, map_fn map, void *aux_data);
 
-static void grow(vector *vector);
+void grow(vector *vector);
 
 #endif

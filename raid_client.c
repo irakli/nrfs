@@ -4,6 +4,12 @@
 #include <string.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/types.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netinet/ip.h> /* superset of previous */
+#include <unistd.h>
+#include <arpa/inet.h>
 #include "vector.h"
 
 struct client_config
@@ -112,30 +118,141 @@ void print_fn(void *elem, void *aux)
 	fprintf(stdout, "%s\n", (char *)elem);
 }
 
+static void send_data(struct request request)
+{
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(5000);
+	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+
+	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	write(sfd, &request, sizeof(request));
+
+	// read(sfd, &buf, 3);
+	// printf("%s\n", buf);
+	// sleep(600);
+	close(sfd);
+}
+
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
+	struct request request;
+	request.syscall = sys_getattr;
+	(void)request;
+
 	return 0;
 }
 
-static int net_mknod(const char *path, mode_t mode, dev_t dev) { return 0; }
+static int net_mknod(const char *path, mode_t mode, dev_t dev)
+{
+	struct request request;
+	request.syscall = sys_mknod;
+	strcpy(request.path, path);
+	request.mode = mode;
+	request.dev = dev;
 
-static int net_mkdir(const char *path, mode_t mode) { return 0; }
+	send_data(request);
 
-static int net_unlink(const char *path) { return 0; }
+	return 0;
+}
 
-static int net_rmdir(const char *path) { return 0; }
+static int net_mkdir(const char *path, mode_t mode)
+{
+	struct request request;
+	request.syscall = sys_mkdir;
+	strcpy(request.path, path);
+	request.mode = mode;
 
-static int net_rename(const char *path, const char *new_path) { return 0; }
+	send_data(request);
 
-static int net_link(const char *path, const char *new_path) { return 0; }
+	return 0;
+}
 
-static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi) { return 0; }
+static int net_unlink(const char *path)
+{
+	struct request request;
+	request.syscall = sys_unlink;
+	strcpy(request.path, path);
 
-static int net_chown(const char *path, uid_t uid, gid_t gid, struct fuse_file_info *fi) { return 0; }
+	send_data(request);
 
-static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi) { return 0; }
+	return 0;
+}
 
-static int net_open(const char *path, struct fuse_file_info *fi) { return 0; }
+static int net_rmdir(const char *path)
+{
+	struct request request;
+	request.syscall = sys_rmdir;
+	strcpy(request.path, path);
+
+	send_data(request);
+
+	return 0;
+}
+
+static int net_rename(const char *path, const char *new_path)
+{
+	struct request request;
+	request.syscall = sys_rename;
+	strcpy(request.path, path);
+	strcpy(request.new_path, new_path);
+
+	send_data(request);
+
+	return 0;
+}
+
+static int net_link(const char *path, const char *new_path)
+{
+	struct request request;
+	request.syscall = sys_link;
+	strcpy(request.path, path);
+	strcpy(request.new_path, new_path);
+
+	send_data(request);
+
+	return 0;
+}
+
+static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+	struct request request;
+	request.syscall = sys_chmod;
+	strcpy(request.path, path);
+	request.mode = mode;
+	request.fi = *fi;
+
+	send_data(request);
+
+	return 0;
+}
+
+static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
+{
+	struct request request;
+	request.syscall = sys_truncate;
+	strcpy(request.path, path);
+	request.offset = offset;
+	request.fi = *fi;
+
+	send_data(request);
+
+	return 0;
+}
+
+static int net_open(const char *path, struct fuse_file_info *fi)
+{
+	struct request request;
+	request.syscall = sys_open;
+	strcpy(request.path, path);
+	request.fi = *fi;
+
+	send_data(request);
+
+	return 0;
+}
 
 static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) { return 0; }
 
@@ -213,6 +330,8 @@ int main(int argc, char const *argv[])
 	fprintf(stdout, "%s\n", s->hot_swap);
 	fprintf(stdout, "%d\n", s->raid);
 	vector_map(&s->servers, &print_fn, NULL);
+
+	net_mknod("tazuna/123/goch", 7, 9);
 
 	return 0;
 }

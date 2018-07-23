@@ -118,7 +118,7 @@ void print_fn(void *elem, void *aux)
 	fprintf(stdout, "%s\n", (char *)elem);
 }
 
-static void send_data(struct request request)
+static int send_data(struct request request, void *aux)
 {
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -130,18 +130,30 @@ static void send_data(struct request request)
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	write(sfd, &request, sizeof(request));
 
-	// read(sfd, &buf, 3);
+	int answer = 0;
+	if (aux != NULL)
+	{
+		read(sfd, &aux, 512);
+	}
+	else
+	{
+		read(sfd, &answer, sizeof(int));
+	}
+
 	// printf("%s\n", buf);
 	// sleep(600);
 	close(sfd);
+	return answer;
 }
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
+	// TODO: Finish him.
 	struct request request;
 	request.syscall = sys_getattr;
-	(void)request;
-
+	strcpy(request.path, path);
+	// request.fi = *fi;
+	send_data(request, (void *)stbuf);
 	return 0;
 }
 
@@ -153,9 +165,7 @@ static int net_mknod(const char *path, mode_t mode, dev_t dev)
 	request.mode = mode;
 	request.dev = dev;
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_mkdir(const char *path, mode_t mode)
@@ -165,9 +175,7 @@ static int net_mkdir(const char *path, mode_t mode)
 	strcpy(request.path, path);
 	request.mode = mode;
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_unlink(const char *path)
@@ -176,9 +184,7 @@ static int net_unlink(const char *path)
 	request.syscall = sys_unlink;
 	strcpy(request.path, path);
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_rmdir(const char *path)
@@ -187,9 +193,7 @@ static int net_rmdir(const char *path)
 	request.syscall = sys_rmdir;
 	strcpy(request.path, path);
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_rename(const char *path, const char *new_path)
@@ -199,9 +203,7 @@ static int net_rename(const char *path, const char *new_path)
 	strcpy(request.path, path);
 	strcpy(request.new_path, new_path);
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_link(const char *path, const char *new_path)
@@ -211,9 +213,7 @@ static int net_link(const char *path, const char *new_path)
 	strcpy(request.path, path);
 	strcpy(request.new_path, new_path);
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
@@ -224,9 +224,7 @@ static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 	request.mode = mode;
 	request.fi = *fi;
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
@@ -237,9 +235,7 @@ static int net_truncate(const char *path, off_t offset, struct fuse_file_info *f
 	request.offset = offset;
 	request.fi = *fi;
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
 static int net_open(const char *path, struct fuse_file_info *fi)
@@ -249,12 +245,21 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	strcpy(request.path, path);
 	request.fi = *fi;
 
-	send_data(request);
-
-	return 0;
+	return send_data(request, NULL);
 }
 
-static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) { return 0; }
+static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
+{
+	// TODO: Finish him.
+	struct request request;
+	request.syscall = sys_read;
+	strcpy(request.path, path);
+	// request.size = size;
+	// request.offset = offset;
+	// request.fi = *fi;
+
+	return send_data(request, NULL);
+}
 
 static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi) { return 0; }
 
@@ -268,9 +273,28 @@ static int net_setxattr(const char *path, const char *name, const char *value, s
 
 static int net_getxattr(const char *path, const char *name, const char *value, size_t size) { return 0; }
 
-static int net_opendir(const char *path, struct fuse_file_info *fi) { return 0; }
+static int net_opendir(const char *path, struct fuse_file_info *fi)
+{
+	// TODO: Finish him.
+	struct request request;
+	request.syscall = sys_opendir;
+	strcpy(request.path, path);
+	// request.fi = *fi;
 
-static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) { return 0; }
+	return send_data(request, NULL);
+}
+
+static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+{
+	// TODO: Finish him.
+	struct request request;
+	request.syscall = sys_readdir;
+	strcpy(request.path, path);
+	// request.offset = offset;
+	// request.fi = *fi;
+
+	return send_data(request, NULL);
+}
 
 static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
 
@@ -287,7 +311,6 @@ struct fuse_operations net_oper = {
 	.rename = net_rename,
 	.link = net_link,
 	.chmod = net_chmod,
-	.chown = net_chown,
 	.truncate = net_truncate,
 	.open = net_open,
 	.read = net_read,
@@ -305,33 +328,38 @@ struct fuse_operations net_oper = {
 	.init = net_init,
 };
 
-int main(int argc, char const *argv[])
+int main(int argc, char *argv[])
 {
-	if (argc <= 1)
-	{
-		fprintf(stderr, "%s\n", "Please provide a configuration file");
-		exit(EXIT_FAILURE);
-	}
+	// if (argc <= 1)
+	// {
+	// 	fprintf(stderr, "%s\n", "Please provide a configuration file");
+	// 	exit(EXIT_FAILURE);
+	// }
 
-	vector storages;
-	struct client_config config;
+	// vector storages;
+	// struct client_config config;
 
-	vector_new(&storages, sizeof(struct raid_storage), NULL, 2);
-	parse_config((char *)argv[1], &storages, &config);
+	// vector_new(&storages, sizeof(struct raid_storage), NULL, 2);
+	// parse_config((char *)argv[1], &storages, &config);
 
-	fprintf(stdout, "%s\n", config.error_log);
-	fprintf(stdout, "%s\n", config.cache_size);
-	fprintf(stdout, "%s\n", config.cache_replacement);
-	fprintf(stdout, "%d\n", config.timeout);
+	// fprintf(stdout, "%s\n", config.error_log);
+	// fprintf(stdout, "%s\n", config.cache_size);
+	// fprintf(stdout, "%s\n", config.cache_replacement);
+	// fprintf(stdout, "%d\n", config.timeout);
 
-	struct raid_storage *s = vector_last(&storages);
-	fprintf(stdout, "%s\n", s->disk_name);
-	fprintf(stdout, "%s\n", s->mount_point);
-	fprintf(stdout, "%s\n", s->hot_swap);
-	fprintf(stdout, "%d\n", s->raid);
-	vector_map(&s->servers, &print_fn, NULL);
+	// struct raid_storage *s = vector_last(&storages);
+	// fprintf(stdout, "%s\n", s->disk_name);
+	// fprintf(stdout, "%s\n", s->mount_point);
+	// fprintf(stdout, "%s\n", s->hot_swap);
+	// fprintf(stdout, "%d\n", s->raid);
+	// vector_map(&s->servers, &print_fn, NULL);
 
-	net_mknod("tazuna/123/goch", 7, 9);
+	// net_opendir("tazuna/123/goch", NULL);
+	printf("rayle\n");
+	// net_getattr("tazuna/123/goch", NULL, 7);
+	// net_open("tazuna/123/goch", 7);
+	// net_readdir("tazuna/123/goch", NULL, NULL, 5, 7);
 
+	return fuse_main(argc, argv, &net_oper, NULL);
 	return 0;
 }

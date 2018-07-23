@@ -1,10 +1,10 @@
 #define FUSE_USE_VERSION 26
-
 #include <fuse.h>
 
 #define MAX_NAME_LENGTH 128
 #define MAX_PATH_LENGTH 256
 #define MAX_IP_LENGTH 24 // 255.255.255.255:65535 (22)
+#define DATA_SIZE 4096
 
 enum syscalls
 {
@@ -32,7 +32,7 @@ enum syscalls
 	sys_init
 };
 
-struct request
+struct __attribute__((__packed__)) request
 {
 	enum syscalls syscall;
 	char path[MAX_PATH_LENGTH];
@@ -43,6 +43,12 @@ struct request
 	size_t size;
 
 	struct fuse_file_info fi;
+};
+
+struct __attribute__((__packed__)) response
+{
+	int status;
+	char data[DATA_SIZE];
 };
 
 // gcc -Wall raid_server.c vector.c `pkg-config fuse --cflags --libs` -o server.out -lpthread

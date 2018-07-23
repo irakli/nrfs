@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <errno.h>
 #include <pthread.h>
+#include <dirent.h>
 
 #define BACKLOG 16
 
@@ -142,6 +143,7 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	result = pread(fi->fh, buffer, size, offset);
 	if (result < 0)
 		return -errno;
+
 	return 0;
 }
 
@@ -167,9 +169,23 @@ static int net_setxattr(const char *path, const char *name, const char *value, s
 
 static int net_getxattr(const char *path, const char *name, const char *value, size_t size) { return 0; }
 
-static int net_opendir(const char *path, struct fuse_file_info *fi) { return 0; }
+static int net_opendir(const char *path, struct fuse_file_info *fi)
+{
+	printf("ridirovkaaaaaaaaaaaaaa\n");
+	return 0;
+}
 
-static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi) { return 0; }
+static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
+{
+	DIR *dp;
+	struct dirent *de;
+	while ((de = readdir(dp)) != NULL)
+	{
+		printf("%s\n", de->d_name);
+	}
+
+	return 0;
+}
 
 static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
 
@@ -177,7 +193,7 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 
 static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
 
-void *client_handler(void *cf)
+static void *client_handler(void *cf)
 {
 	int cfd = *(int *)cf;
 	struct request request;
@@ -189,9 +205,92 @@ void *client_handler(void *cf)
 			break;
 
 		printf("%d\n", request.syscall);
-		printf("%s\n", request.path);
-		printf("%d\n", request.mode);
-		printf("%d\n", request.dev);
+		// printf("%s\n", request.path);
+		// printf("%d\n", request.mode);
+		// printf("%d\n", request.dev);
+
+		int result = 0;
+
+		switch (request.syscall)
+		{
+		case sys_getattr:
+		{
+			struct response response;
+			response.status = net_getattr(request.path, &response.data, &request.fi);
+
+			char *data = (char *)&response;
+			int sent = 0;
+			while (sent < sizeof(response))
+			{
+				sent += send(cfd, data, 1024, NULL);
+				if (sent <= 0)
+					break;
+				data += sent;
+			}
+
+			// write(cfd, &buffer, sizeof(buffer));
+			break;
+		}
+		case sys_mknod:
+			result = net_mknod(request.path, request.mode, request.dev);
+			break;
+		case sys_mkdir:
+			result = net_mkdir(request.path, request.mode);
+			break;
+		case sys_unlink:
+			result = net_unlink(request.path);
+			break;
+		case sys_rmdir:
+			result = net_rmdir(request.path);
+			break;
+		case sys_rename:
+			result = net_rename(request.path, request.new_path);
+			break;
+		case sys_link:
+			result = net_link(request.path, request.new_path);
+			break;
+		case sys_chmod:
+			result = net_chmod(request.path, request.mode, &request.fi);
+			break;
+		case sys_truncate:
+			result = net_truncate(request.path, request.offset, &request.fi);
+			break;
+		case sys_open:
+			result = net_open(request.path, &request.fi);
+			break;
+		case sys_read:
+			/* code */
+			break;
+		case sys_write:
+			/* code */
+			break;
+		case sys_statfs:
+			/* code */
+			break;
+		case sys_flush:
+			/* code */
+			break;
+		case sys_release:
+			/* code */
+			break;
+		case sys_setxattr:
+			/* code */
+			break;
+		case sys_getxattr:
+			/* code */
+			break;
+		case sys_opendir:
+			result = net_opendir(request.path, &request.fi);
+			break;
+		case sys_readdir:
+			result = net_readdir(request.path, NULL, NULL, request.offset, &request.fi);
+			break;
+		default:
+			result = -errno;
+			break;
+		}
+
+		write(cfd, &result, sizeof(result));
 	}
 
 	close(cfd);

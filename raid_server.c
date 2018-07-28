@@ -27,18 +27,17 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 {
 	int result = 0;
 
-	memset(stbuf, 0, sizeof(struct stat));
-	if (strcmp(path, "/") == 0)
-	{
-		stbuf->st_mode = S_IFDIR | 0755;
-		stbuf->st_nlink = 2;
-	}
-	else
-		result = lstat(path, stbuf);
+	// memset(stbuf, 0, sizeof(struct stat));
+	// if (strcmp(path, "/") == 0)
+	// {
+	// 	stbuf->st_mode = S_IFDIR | 0755;
+	// 	stbuf->st_nlink = 2;
+	// }
+	// else
+	result = lstat(path, stbuf);
 
 	if (result < 0)
 		return -errno;
-	// return -ENOENT;
 
 	return result;
 }
@@ -141,12 +140,13 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 {
 	int result;
 
-	printf("size: %d, offset: %d\n", size, offset);
+	// printf("size: %d, offset: %d\n", size, offset);
 	int fd = open(path, fi->flags);
 	result = pread(fd, buffer, size, offset);
 	if (result < 0)
 		return -errno;
 
+	// close(fd);
 	return result;
 }
 
@@ -159,6 +159,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	if (result < 0)
 		return -errno;
 
+	// close(fd);
 	return result;
 }
 
@@ -175,11 +176,11 @@ static int net_getxattr(const char *path, const char *name, const char *value, s
 static int net_opendir(const char *path, struct fuse_file_info *fi)
 {
 	DIR *dp = opendir(path);
-	fi->fh = (intptr_t)dp;
 
 	if (dp == NULL)
 		return -errno;
 
+	// closedir(dp);
 	return 0;
 }
 
@@ -201,6 +202,7 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	char strterm[2] = "\0";
 	memcpy((char *)buffer + off - 1, &strterm, sizeof(char));
 
+	// closedir(dp);
 	return 0;
 }
 
@@ -294,22 +296,28 @@ static void *client_handler(void *cf)
 		}
 		case sys_read:
 		{
-			struct response response;
-			response.status = net_read(fullpath, &response.data, request.size, request.offset, &request.fi);
-			printf("DaVITI: %s", response.data);
-			write(cfd, &response, sizeof(struct response));
+			struct rw_response response;
+			response.size = request.size;
+
+			void *buffer = malloc(response.size);
+			response.status = net_read(fullpath, buffer, request.size, request.offset, &request.fi);
+			write(cfd, &response, sizeof(struct rw_response));
+			write(cfd, buffer, response.size);
+
+			free(buffer);
 			break;
 		}
 		case sys_write:
 		{
-			struct response response;
-			char *payload = malloc(DATA_SIZE);
-			// read(cfd, payload, DATA_SIZE);
+			struct rw_response response;
+			response.size = request.size;
 
-
-			response.status = net_write(fullpath, payload, request.size, request.offset, &request.fi);
+			char *buffer = malloc(request.size);
+			read(cfd, buffer, request.size);
+			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi);
 			write(cfd, &response, sizeof(struct response));
-			free(payload);
+
+			free(buffer);
 			break;
 		}
 		case sys_statfs:
@@ -398,3 +406,6 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
+
+// -------------------------------------- //
+/* fi-ები შევინახო და release დავწერო ნორმალურად. */

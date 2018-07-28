@@ -43,6 +43,7 @@ struct __attribute__((__packed__)) request
 	size_t size;
 
 	struct fuse_file_info fi;
+	struct fuse_file_info *fi_addr;
 };
 
 struct __attribute__((__packed__)) response
@@ -51,6 +52,18 @@ struct __attribute__((__packed__)) response
 	char data[DATA_SIZE];
 };
 
+struct __attribute__((__packed__)) rw_response
+{
+	int status;
+	size_t size;
+};
+
+struct __attribute__((__packed__)) fi_response
+{
+	int status;
+	struct fuse_file_info fi;
+};
+
 // gcc -Wall raid_server.c vector.c `pkg-config fuse --cflags --libs` -o server.out -lpthread
 // gcc -Wall raid_client.c vector.c `pkg-config fuse --cflags --libs` -o client.out
-// fusermount -uz ~/code/final/filesystem/mount1
+// fusermount -uz ~/code/final/filesystem/mount

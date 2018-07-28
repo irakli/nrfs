@@ -118,7 +118,7 @@ void print_fn(void *elem, void *aux)
 	fprintf(stdout, "%s\n", (char *)elem);
 }
 
-static int send_data(struct request request, void *buf, size_t size)
+static int send_data(struct request request, void *buffer, const void *payload, size_t size)
 {
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -130,13 +130,17 @@ static int send_data(struct request request, void *buf, size_t size)
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	write(sfd, &request, sizeof(request));
 
+	/* Sends payload to the server when necessary (write). */
+	if (payload != NULL)
+		write(sfd, buffer, sizeof(DATA_SIZE));
+
 	int status = -errno;
-	if (buf != NULL)
+	if (buffer != NULL)
 	{
 		struct response response;
 		read(sfd, &response, sizeof(struct response));
 		status = response.status;
-		memcpy(buf, response.data, size);
+		memcpy(buffer, response.data, size);
 	}
 	else
 		read(sfd, &status, sizeof(status));
@@ -153,15 +157,13 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	struct request request;
 	request.syscall = sys_getattr;
 	strcpy(request.path, path);
-	// printf("%s\n", path);
-	// printf("%d\n", request.syscall);
 
-	int status = send_data(request, (void *)stbuf, sizeof(struct stat));
+	int status = send_data(request, (void *)stbuf, NULL, sizeof(struct stat));
 	// TODO: აქ არ მუშაობს რაღაც.
 
-	// printf("Getattr status: %d\n", status);
-	// printf("Gettatr uid: %d\n", stbuf->st_uid);
-	// printf("Gettatr size: %d\n", stbuf->st_size);
+	printf("Getattr status: %d\n", status);
+	printf("Gettatr uid: %d\n", stbuf->st_uid);
+	printf("Gettatr size: %d\n", stbuf->st_size);
 
 	return status;
 }
@@ -175,7 +177,7 @@ static int net_mknod(const char *path, mode_t mode, dev_t dev)
 	request.mode = mode;
 	request.dev = dev;
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_mkdir(const char *path, mode_t mode)
@@ -186,7 +188,7 @@ static int net_mkdir(const char *path, mode_t mode)
 	strcpy(request.path, path);
 	request.mode = mode;
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_unlink(const char *path)
@@ -196,7 +198,7 @@ static int net_unlink(const char *path)
 	request.syscall = sys_unlink;
 	strcpy(request.path, path);
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_rmdir(const char *path)
@@ -206,7 +208,7 @@ static int net_rmdir(const char *path)
 	request.syscall = sys_rmdir;
 	strcpy(request.path, path);
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_rename(const char *path, const char *new_path)
@@ -217,7 +219,7 @@ static int net_rename(const char *path, const char *new_path)
 	strcpy(request.path, path);
 	strcpy(request.new_path, new_path);
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_link(const char *path, const char *new_path)
@@ -228,7 +230,7 @@ static int net_link(const char *path, const char *new_path)
 	strcpy(request.path, path);
 	strcpy(request.new_path, new_path);
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
@@ -241,7 +243,7 @@ static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 	request.mode = mode;
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
@@ -254,7 +256,7 @@ static int net_truncate(const char *path, off_t offset, struct fuse_file_info *f
 	request.offset = offset;
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_open(const char *path, struct fuse_file_info *fi)
@@ -266,7 +268,7 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	strcpy(request.path, path);
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
@@ -280,7 +282,9 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	request.offset = offset;
 	request.fi = *fi;
 
-	return send_data(request, (void *)buffer, DATA_SIZE);
+	int status = send_data(request, (void *)buffer, NULL, DATA_SIZE);
+
+	return status;
 }
 
 static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
@@ -293,7 +297,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	request.offset = offset;
 	request.fi = *fi;
 
-	return send_data(request, (void *)buffer, DATA_SIZE);
+	return send_data(request, NULL, buffer, DATA_SIZE);
 }
 
 static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
@@ -313,13 +317,11 @@ static int net_opendir(const char *path, struct fuse_file_info *fi)
 	strcpy(request.path, path);
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return send_data(request, NULL, NULL, 0);
 }
 
 static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
-	// printf("AQA SHEMOVIDA MEE TASHGII\n");
-	// TODO: Finish him.
 	struct request request;
 	request.syscall = sys_readdir;
 	strcpy(request.path, path);
@@ -327,14 +329,11 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	request.fi = *fi;
 
 	char *dirlist = malloc(DATA_SIZE);
-	int result = send_data(request, dirlist, DATA_SIZE);
-
-	// printf("DIRLIST: %s\n", (char *)dirlist);
+	int result = send_data(request, dirlist, NULL, DATA_SIZE);
 
 	char *dir = strtok(dirlist, "|");
 	while (dir != NULL)
 	{
-		// printf("%s\n", dir);
 		filler(buffer, dir, NULL, 0);
 		dir = strtok(NULL, "|");
 	}
@@ -345,7 +344,16 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 
 static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
 
-static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) { return 0; }
+static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+	struct request request;
+	request.syscall = sys_create;
+	strcpy(request.path, path);
+	request.mode = mode;
+	request.fi = *fi;
+
+	return send_data(request, NULL, NULL, 0);
+}
 
 static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
 
@@ -371,7 +379,7 @@ struct fuse_operations net_oper = {
 	.opendir = net_opendir,
 	.readdir = net_readdir,
 	.releasedir = net_releasedir,
-	.create = net_create,
+	// .create = net_create,
 	.init = net_init,
 };
 

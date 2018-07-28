@@ -27,20 +27,20 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 {
 	int result = 0;
 
-	// memset(stbuf, 0, sizeof(struct stat));
-	// if (strcmp(path, "/") == 0)
-	// {
-	// 	stbuf->st_mode = S_IFDIR | 0755;
-	// 	stbuf->st_nlink = 2;
-	// }
-	// else
-	result = lstat(path, stbuf);
+	memset(stbuf, 0, sizeof(struct stat));
+	if (strcmp(path, "/") == 0)
+	{
+		stbuf->st_mode = S_IFDIR | 0755;
+		stbuf->st_nlink = 2;
+	}
+	else
+		result = lstat(path, stbuf);
 
 	if (result < 0)
-		return -ENOENT;
-	// return -errno;
+		return -errno;
+	// return -ENOENT;
 
-	return 0;
+	return result;
 }
 
 static int net_mknod(const char *path, mode_t mode, dev_t dev)
@@ -141,25 +141,25 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 {
 	int result;
 
-	/* We can just call pread with fi->fh because at this point 
-	   open syscall should already be called and fh will be set. */
-	result = pread(fi->fh, buffer, size, offset);
+	printf("size: %d, offset: %d\n", size, offset);
+	int fd = open(path, fi->flags);
+	result = pread(fd, buffer, size, offset);
 	if (result < 0)
 		return -errno;
 
-	return 0;
+	return result;
 }
 
 static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	int result;
 
-	/* Same as read. */
-	result = pwrite(fi->fh, buffer, size, offset);
+	int fd = open(path, fi->flags);
+	result = pwrite(fd, buffer, size, offset);
 	if (result < 0)
 		return -errno;
 
-	return 0;
+	return result;
 }
 
 static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
@@ -186,7 +186,6 @@ static int net_opendir(const char *path, struct fuse_file_info *fi)
 static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
 	DIR *dp = opendir(path);
-	// printf("%s\n", readdir(dp)->d_name);
 
 	struct dirent *de;
 	int off = 0;
@@ -197,12 +196,10 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 		off += strlen(de->d_name);
 		memcpy((char *)buffer + off, &delimiter, 1);
 		off++;
-		// printf("%s\n", de->d_name);
 	}
 
 	char strterm[2] = "\0";
 	memcpy((char *)buffer + off - 1, &strterm, sizeof(char));
-	// printf("Directories: %s\n", (char *)buffer);
 
 	return 0;
 }
@@ -222,9 +219,7 @@ static void *client_handler(void *cf)
 		struct request request;
 		size_t data_size = read(cfd, &request, sizeof(struct request));
 		if (data_size <= 0)
-		{
 			break;
-		}
 
 		printf("Called syscall: %d\n", request.syscall);
 
@@ -233,8 +228,6 @@ static void *client_handler(void *cf)
 		char *fullpath = malloc(strlen(request.path) + strlen(config.mount_point) + 1);
 		strncpy(fullpath, config.mount_point, strlen(config.mount_point) - 1);
 		strcat(fullpath, request.path);
-
-		// printf("Full path: %s\n", fullpath);
 
 		switch (request.syscall)
 		{
@@ -303,26 +296,32 @@ static void *client_handler(void *cf)
 		{
 			struct response response;
 			response.status = net_read(fullpath, &response.data, request.size, request.offset, &request.fi);
+			printf("DaVITI: %s", response.data);
 			write(cfd, &response, sizeof(struct response));
 			break;
 		}
 		case sys_write:
 		{
 			struct response response;
-			response.status = net_write(fullpath, &response.data, request.size, request.offset, &request.fi);
+			char *payload = malloc(DATA_SIZE);
+			// read(cfd, payload, DATA_SIZE);
+
+
+			response.status = net_write(fullpath, payload, request.size, request.offset, &request.fi);
 			write(cfd, &response, sizeof(struct response));
+			free(payload);
 			break;
 		}
-		// case sys_statfs:
-		// 	break;
-		// case sys_flush:
-		// 	break;
-		// case sys_release:
-		// 	break;
-		// case sys_setxattr:
-		// 	break;
-		// case sys_getxattr:
-		// 	break;
+		case sys_statfs:
+			break;
+		case sys_flush:
+			break;
+		case sys_release:
+			break;
+		case sys_setxattr:
+			break;
+		case sys_getxattr:
+			break;
 		case sys_opendir:
 		{
 			result = net_opendir(fullpath, &request.fi);
@@ -334,6 +333,14 @@ static void *client_handler(void *cf)
 			struct response response;
 			response.status = net_readdir(fullpath, &response.data, NULL, request.offset, &request.fi);
 			write(cfd, &response, sizeof(struct response));
+			break;
+		}
+		case sys_releasedir:
+			break;
+		case sys_create:
+		{
+			result = net_create(fullpath, request.mode, &request.fi);
+			write(cfd, &result, sizeof(result));
 			break;
 		}
 		default:

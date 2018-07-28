@@ -53,3 +53,4 @@ struct __attribute__((__packed__)) response
 
 // gcc -Wall raid_server.c vector.c `pkg-config fuse --cflags --libs` -o server.out -lpthread
 // gcc -Wall raid_client.c vector.c `pkg-config fuse --cflags --libs` -o client.out
+// fusermount -uz ~/code/final/filesystem/mount1

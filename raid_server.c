@@ -21,21 +21,24 @@ struct server_config
 	int port;
 };
 
+struct server_config config;
+
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
 	int result = 0;
 
-	memset(stbuf, 0, sizeof(struct stat));
-	if (strcmp(path, "/") == 0)
-	{
-		stbuf->st_mode = S_IFDIR | 0755;
-		stbuf->st_nlink = 2;
-	}
-	else
-		result = lstat(path, stbuf);
+	// memset(stbuf, 0, sizeof(struct stat));
+	// if (strcmp(path, "/") == 0)
+	// {
+	// 	stbuf->st_mode = S_IFDIR | 0755;
+	// 	stbuf->st_nlink = 2;
+	// }
+	// else
+	result = lstat(path, stbuf);
 
 	if (result < 0)
-		return -errno;
+		return -ENOENT;
+	// return -errno;
 
 	return 0;
 }
@@ -171,18 +174,35 @@ static int net_getxattr(const char *path, const char *name, const char *value, s
 
 static int net_opendir(const char *path, struct fuse_file_info *fi)
 {
-	printf("ridirovkaaaaaaaaaaaaaa\n");
+	DIR *dp = opendir(path);
+	fi->fh = (intptr_t)dp;
+
+	if (dp == NULL)
+		return -errno;
+
 	return 0;
 }
 
 static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
-	DIR *dp;
+	DIR *dp = opendir(path);
+	// printf("%s\n", readdir(dp)->d_name);
+
 	struct dirent *de;
+	int off = 0;
+	char delimiter[2] = "|";
 	while ((de = readdir(dp)) != NULL)
 	{
-		printf("%s\n", de->d_name);
+		memcpy((char *)buffer + off, de->d_name, strlen(de->d_name));
+		off += strlen(de->d_name);
+		memcpy((char *)buffer + off, &delimiter, 1);
+		off++;
+		// printf("%s\n", de->d_name);
 	}
+
+	char strterm[2] = "\0";
+	memcpy((char *)buffer + off - 1, &strterm, sizeof(char));
+	// printf("Directories: %s\n", (char *)buffer);
 
 	return 0;
 }
@@ -196,101 +216,131 @@ static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
 static void *client_handler(void *cf)
 {
 	int cfd = *(int *)cf;
-	struct request request;
 
 	while (1)
 	{
+		struct request request;
 		size_t data_size = read(cfd, &request, sizeof(struct request));
 		if (data_size <= 0)
+		{
 			break;
+		}
 
-		printf("%d\n", request.syscall);
-		// printf("%s\n", request.path);
-		// printf("%d\n", request.mode);
-		// printf("%d\n", request.dev);
+		printf("Called syscall: %d\n", request.syscall);
 
 		int result = 0;
+
+		char *fullpath = malloc(strlen(request.path) + strlen(config.mount_point) + 1);
+		strncpy(fullpath, config.mount_point, strlen(config.mount_point) - 1);
+		strcat(fullpath, request.path);
+
+		// printf("Full path: %s\n", fullpath);
 
 		switch (request.syscall)
 		{
 		case sys_getattr:
 		{
 			struct response response;
-			response.status = net_getattr(request.path, &response.data, &request.fi);
-
-			char *data = (char *)&response;
-			int sent = 0;
-			while (sent < sizeof(response))
-			{
-				sent += send(cfd, data, 1024, NULL);
-				if (sent <= 0)
-					break;
-				data += sent;
-			}
-
-			// write(cfd, &buffer, sizeof(buffer));
+			response.status = net_getattr(fullpath, &response.data, &request.fi);
+			write(cfd, &response, sizeof(struct response));
 			break;
 		}
 		case sys_mknod:
-			result = net_mknod(request.path, request.mode, request.dev);
-			break;
-		case sys_mkdir:
-			result = net_mkdir(request.path, request.mode);
-			break;
-		case sys_unlink:
-			result = net_unlink(request.path);
-			break;
-		case sys_rmdir:
-			result = net_rmdir(request.path);
-			break;
-		case sys_rename:
-			result = net_rename(request.path, request.new_path);
-			break;
-		case sys_link:
-			result = net_link(request.path, request.new_path);
-			break;
-		case sys_chmod:
-			result = net_chmod(request.path, request.mode, &request.fi);
-			break;
-		case sys_truncate:
-			result = net_truncate(request.path, request.offset, &request.fi);
-			break;
-		case sys_open:
-			result = net_open(request.path, &request.fi);
-			break;
-		case sys_read:
-			/* code */
-			break;
-		case sys_write:
-			/* code */
-			break;
-		case sys_statfs:
-			/* code */
-			break;
-		case sys_flush:
-			/* code */
-			break;
-		case sys_release:
-			/* code */
-			break;
-		case sys_setxattr:
-			/* code */
-			break;
-		case sys_getxattr:
-			/* code */
-			break;
-		case sys_opendir:
-			result = net_opendir(request.path, &request.fi);
-			break;
-		case sys_readdir:
-			result = net_readdir(request.path, NULL, NULL, request.offset, &request.fi);
-			break;
-		default:
-			result = -errno;
+		{
+			result = net_mknod(fullpath, request.mode, request.dev);
+			write(cfd, &result, sizeof(result));
 			break;
 		}
-
-		write(cfd, &result, sizeof(result));
+		case sys_mkdir:
+		{
+			result = net_mkdir(fullpath, request.mode);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_unlink:
+		{
+			result = net_unlink(fullpath);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_rmdir:
+		{
+			result = net_rmdir(fullpath);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_rename:
+		{
+			result = net_rename(fullpath, request.new_path);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_link:
+		{
+			result = net_link(fullpath, request.new_path);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_chmod:
+		{
+			result = net_chmod(fullpath, request.mode, &request.fi);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_truncate:
+		{
+			result = net_truncate(fullpath, request.offset, &request.fi);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_open:
+		{
+			result = net_open(fullpath, &request.fi);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_read:
+		{
+			struct response response;
+			response.status = net_read(fullpath, &response.data, request.size, request.offset, &request.fi);
+			write(cfd, &response, sizeof(struct response));
+			break;
+		}
+		case sys_write:
+		{
+			struct response response;
+			response.status = net_write(fullpath, &response.data, request.size, request.offset, &request.fi);
+			write(cfd, &response, sizeof(struct response));
+			break;
+		}
+		// case sys_statfs:
+		// 	break;
+		// case sys_flush:
+		// 	break;
+		// case sys_release:
+		// 	break;
+		// case sys_setxattr:
+		// 	break;
+		// case sys_getxattr:
+		// 	break;
+		case sys_opendir:
+		{
+			result = net_opendir(fullpath, &request.fi);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_readdir:
+		{
+			struct response response;
+			response.status = net_readdir(fullpath, &response.data, NULL, request.offset, &request.fi);
+			write(cfd, &response, sizeof(struct response));
+			break;
+		}
+		default:
+			result = -errno;
+			write(cfd, &result, sizeof(result));
+			break;
+		}
 	}
 
 	close(cfd);
@@ -305,12 +355,11 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	struct server_config config;
 	strcpy(config.ip, argv[1]);
 	strcpy(config.mount_point, argv[3]);
 	config.port = atoi(argv[2]);
 
-	fprintf(stdout, "%s\n", "Starting up a server...");
+	fprintf(stdout, "\n%s\n", "Starting up a server...");
 	fprintf(stdout, "%s\n", config.ip);
 	fprintf(stdout, "%s\n", config.mount_point);
 	fprintf(stdout, "%d\n", config.port);

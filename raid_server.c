@@ -34,8 +34,8 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	// 	stbuf->st_nlink = 2;
 	// }
 	// else
-	int fd = open(path, fi->flags);
-	result = fstat(fd, stbuf);
+	// int fd = open(path, fi->flags);
+	result = lstat(path, stbuf);
 
 	printf("getattr status: %d\n", result);
 	printf("getattr path: %s\n", path);
@@ -45,7 +45,7 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	if (result < 0)
 		return -errno;
 
-	close(fd);
+	// close(fd);
 	return result;
 }
 
@@ -218,7 +218,8 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 
 static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
 
-static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) { 
+static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
 	int result;
 
 	result = open(path, fi->flags, mode);
@@ -227,7 +228,7 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) 
 
 	close(result);
 	return 0;
- }
+}
 
 static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
 

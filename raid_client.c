@@ -325,8 +325,8 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	request.offset = offset;
 	request.fi = *fi;
 
-	// return read_write(request, NULL, buffer);
-	return 0;
+	return read_write(request, NULL, buffer);
+	// return 0;
 }
 
 static int net_statfs(const char *path, struct statvfs *statv) { return 0; }

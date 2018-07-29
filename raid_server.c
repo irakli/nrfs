@@ -270,8 +270,7 @@ static void *client_handler(void *cf)
 		if (data_size <= 0)
 			break;
 
-		// printf("Called syscall: %d\n", request.syscall);
-
+		printf("Called syscall: %d\n", request.syscall);
 		int result = 0;
 
 		char fullpath[strlen(request.path) + strlen(config.mount_point) + 1];
@@ -353,7 +352,6 @@ static void *client_handler(void *cf)
 		case sys_write:
 		{
 			struct rw_response response;
-			response.size = request.size;
 
 			char *buffer = malloc(request.size);
 			read(cfd, buffer, request.size);
@@ -365,10 +363,10 @@ static void *client_handler(void *cf)
 
 			// response.status = 0;
 			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi);
-			write(cfd, &response, sizeof(struct response));
+			write(cfd, &response, sizeof(struct rw_response));
 
 			free(buffer);
-			return;
+			break;
 		}
 		case sys_statfs:
 			break;

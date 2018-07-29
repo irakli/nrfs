@@ -91,6 +91,8 @@ static int net_rmdir(const char *path)
 
 static int net_rename(const char *path, const char *new_path)
 {
+	printf("old: %s\n", path);
+	printf("new: %s\n", new_path);
 	int result = rename(path, new_path);
 
 	if (result < 0)
@@ -306,13 +308,21 @@ static void *client_handler(void *cf)
 		}
 		case sys_rename:
 		{
-			result = net_rename(fullpath, request.new_path);
+			char fullpath_new[strlen(request.new_path) + strlen(config.mount_point) + 1];
+			strncpy(fullpath_new, config.mount_point, strlen(config.mount_point) - 1);
+			strcat(fullpath_new, request.new_path);
+
+			result = net_rename(fullpath, fullpath_new);
 			write(cfd, &result, sizeof(result));
 			break;
 		}
 		case sys_link:
 		{
-			result = net_link(fullpath, request.new_path);
+			char fullpath_new[strlen(request.new_path) + strlen(config.mount_point) + 1];
+			strncpy(fullpath_new, config.mount_point, strlen(config.mount_point) - 1);
+			strcat(fullpath_new, request.new_path);
+
+			result = net_link(fullpath, fullpath_new);
 			write(cfd, &result, sizeof(result));
 			break;
 		}

@@ -34,11 +34,18 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	// 	stbuf->st_nlink = 2;
 	// }
 	// else
-	result = lstat(path, stbuf);
+	int fd = open(path, fi->flags);
+	result = fstat(fd, stbuf);
+
+	printf("getattr status: %d\n", result);
+	printf("getattr path: %s\n", path);
+	printf("gettatr uid: %d\n", stbuf->st_uid);
+	printf("gettatr size: %d\n", stbuf->st_size);
 
 	if (result < 0)
 		return -errno;
 
+	close(fd);
 	return result;
 }
 
@@ -105,22 +112,26 @@ static int net_link(const char *path, const char *new_path)
 static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	(void)fi;
+	int fd = open(path, fi->flags);
 	int result = chmod(path, mode);
 
 	if (result < 0)
 		return -errno;
 
+	close(fd);
 	return 0;
 }
 
 static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
 {
 	(void)fi;
+	int fd = open(path, fi->flags);
 	int result = truncate(path, offset);
 
 	if (result < 0)
 		return -errno;
 
+	close(fd);
 	return 0;
 }
 
@@ -131,8 +142,7 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	if (fd < 0)
 		return -errno;
 
-	fi->fh = fd;
-
+	close(fd);
 	return 0;
 }
 
@@ -146,7 +156,7 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	if (result < 0)
 		return -errno;
 
-	// close(fd);
+	close(fd);
 	return result;
 }
 
@@ -159,7 +169,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	if (result < 0)
 		return -errno;
 
-	// close(fd);
+	close(fd);
 	return result;
 }
 
@@ -180,7 +190,7 @@ static int net_opendir(const char *path, struct fuse_file_info *fi)
 	if (dp == NULL)
 		return -errno;
 
-	// closedir(dp);
+	closedir(dp);
 	return 0;
 }
 
@@ -202,13 +212,22 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	char strterm[2] = "\0";
 	memcpy((char *)buffer + off - 1, &strterm, sizeof(char));
 
-	// closedir(dp);
+	closedir(dp);
 	return 0;
 }
 
 static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
 
-static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) { return 0; }
+static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi) { 
+	int result;
+
+	result = open(path, fi->flags, mode);
+	if (result < 0)
+		return -errno;
+
+	close(result);
+	return 0;
+ }
 
 static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
 
@@ -227,7 +246,8 @@ static void *client_handler(void *cf)
 
 		int result = 0;
 
-		char *fullpath = malloc(strlen(request.path) + strlen(config.mount_point) + 1);
+		// char *fullpath = malloc(strlen(request.path) + strlen(config.mount_point) + 1);
+		char fullpath[strlen(request.path) + strlen(config.mount_point) + 1];
 		strncpy(fullpath, config.mount_point, strlen(config.mount_point) - 1);
 		strcat(fullpath, request.path);
 
@@ -240,12 +260,12 @@ static void *client_handler(void *cf)
 			write(cfd, &response, sizeof(struct response));
 			break;
 		}
-		case sys_mknod:
-		{
-			result = net_mknod(fullpath, request.mode, request.dev);
-			write(cfd, &result, sizeof(result));
-			break;
-		}
+		// case sys_mknod:
+		// {
+		// 	result = net_mknod(fullpath, request.mode, request.dev);
+		// 	write(cfd, &result, sizeof(result));
+		// 	break;
+		// }
 		case sys_mkdir:
 		{
 			result = net_mkdir(fullpath, request.mode);
@@ -303,6 +323,8 @@ static void *client_handler(void *cf)
 			response.status = net_read(fullpath, buffer, request.size, request.offset, &request.fi);
 			write(cfd, &response, sizeof(struct rw_response));
 			write(cfd, buffer, response.size);
+
+			printf("Should read: %d + %d = %d\n", sizeof(struct rw_response), response.size, sizeof(struct rw_response) + response.size);
 
 			free(buffer);
 			break;

@@ -1,4 +1,4 @@
-#define FUSE_USE_VERSION 26
+#define FUSE_USE_VERSION 31
 #include <fuse.h>
 
 #define MAX_NAME_LENGTH 128
@@ -25,6 +25,8 @@ enum syscalls
 	sys_release,
 	sys_setxattr,
 	sys_getxattr,
+	sys_access,
+	sys_utimens,
 	sys_opendir,
 	sys_readdir,
 	sys_releasedir,
@@ -37,6 +39,7 @@ struct __attribute__((__packed__)) request
 	enum syscalls syscall;
 	char path[MAX_PATH_LENGTH];
 	char new_path[MAX_PATH_LENGTH];
+	int mask;
 	mode_t mode;
 	dev_t dev;
 	off_t offset;

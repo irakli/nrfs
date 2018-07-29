@@ -155,9 +155,9 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	int status = send_data(request, (void *)stbuf, sizeof(struct stat));
 	// TODO: აქ არ მუშაობს რაღაც.
 
-	printf("Getattr status: %d\n", status);
-	printf("Gettatr uid: %d\n", stbuf->st_uid);
-	printf("Gettatr size: %d\n", stbuf->st_size);
+	// printf("Getattr status: %d\n", status);
+	// printf("Gettatr uid: %d\n", stbuf->st_uid);
+	// printf("Gettatr size: %d\n", stbuf->st_size);
 
 	return status;
 }
@@ -248,9 +248,11 @@ static int net_truncate(const char *path, off_t offset, struct fuse_file_info *f
 	request.syscall = sys_truncate;
 	strcpy(request.path, path);
 	request.offset = offset;
-	request.fi = *fi;
+	if (fi != NULL)
+		request.fi = *fi;
 
 	return send_data(request, NULL, 0);
+	// return 0;
 }
 
 static int net_open(const char *path, struct fuse_file_info *fi)
@@ -265,7 +267,7 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	return send_data(request, NULL, 0);
 }
 
-static int read_write(struct request request, void *read_buffer, const void *write_buffer)
+static int read_write(struct request request, char *read_buffer, const char *write_buffer)
 {
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
@@ -278,18 +280,20 @@ static int read_write(struct request request, void *read_buffer, const void *wri
 	write(sfd, &request, sizeof(request));
 
 	int status = -errno;
-	size_t size = 0;
 	if (read_buffer != NULL)
 	{
 		struct rw_response response;
 		read(sfd, &response, sizeof(struct rw_response));
 		status = response.status;
-		size = response.size;
+		size_t size = response.size;
 		read(sfd, read_buffer, size);
-		printf("Reads: %d + %d = %d\n", sizeof(struct rw_response), size, sizeof(struct rw_response) + size);
+		// printf("Reads: %d + %d = %d\n", sizeof(struct rw_response), size, sizeof(struct rw_response) + size);
 	}
 	else if (write_buffer != NULL)
 	{
+		// printf("%s\n", write_buffer);
+		// printf("len: %d\n", strlen((char *)write_buffer));
+		// printf("size: %d\n", request.size);
 		write(sfd, write_buffer, request.size);
 		struct rw_response response;
 		read(sfd, &response, sizeof(struct rw_response));
@@ -311,12 +315,15 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	request.offset = offset;
 	request.fi = *fi;
 
-	return read_write(request, (void *)buffer, NULL);
+	return read_write(request, buffer, NULL);
 }
 
 static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	printf("%s\n", "write");
+	// printf("%s\n", buffer);
+	// printf("len: %d\n", strlen((char *)buffer));
+	// printf("size: %d\n", size);
 
 	struct request request;
 	request.syscall = sys_write;
@@ -335,14 +342,6 @@ static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
 
 static int net_release(const char *path, struct fuse_file_info *fi)
 {
-	// printf("%s: %s \n", "release", path);
-
-	// struct request request;
-	// request.syscall = sys_release;
-	// strcpy(request.path, path);
-	// request.fi = *fi;
-
-	// // return send_data(request, NULL, 0);
 	return 0;
 }
 
@@ -388,14 +387,6 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 
 static int net_releasedir(const char *path, struct fuse_file_info *fi)
 {
-	// printf("%s: %s \n", "releasedir", path);
-
-	// struct request request;
-	// request.syscall = sys_releasedir;
-	// strcpy(request.path, path);
-	// request.fi = *fi;
-
-	// // return send_data(request, NULL, 0);
 	return 0;
 }
 
@@ -411,6 +402,20 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 	return send_data(request, NULL, 0);
 }
+
+static int net_access(const char *path, int mask)
+{
+	printf("%s: %s \n", "access", path);
+
+	struct request request;
+	request.syscall = sys_create;
+	strcpy(request.path, path);
+	request.mask = mask;
+
+	return send_data(request, NULL, 0);
+}
+
+static int xmp_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) { return 0; }
 
 struct fuse_operations net_oper = {
 	.getattr = net_getattr,
@@ -431,6 +436,8 @@ struct fuse_operations net_oper = {
 	.setxattr = net_setxattr,
 	.getxattr = net_getxattr,
 
+	// .access = net_access,
+	// .utimens = net_utimens,
 	.opendir = net_opendir,
 	.readdir = net_readdir,
 	.releasedir = net_releasedir,

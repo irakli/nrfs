@@ -37,10 +37,10 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	// int fd = open(path, fi->flags);
 	result = lstat(path, stbuf);
 
-	printf("getattr status: %d\n", result);
-	printf("getattr path: %s\n", path);
-	printf("gettatr uid: %d\n", stbuf->st_uid);
-	printf("gettatr size: %d\n", stbuf->st_size);
+	// printf("getattr status: %d\n", result);
+	// printf("getattr path: %s\n", path);
+	// printf("gettatr uid: %d\n", stbuf->st_uid);
+	// printf("gettatr size: %d\n", stbuf->st_size);
 
 	if (result < 0)
 		return -errno;
@@ -122,16 +122,16 @@ static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
+static int net_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 {
 	(void)fi;
-	int fd = open(path, fi->flags);
-	int result = truncate(path, offset);
+	// int fd = open(path, fi->flags);
+	int result = truncate(path, size);
 
 	if (result < 0)
 		return -errno;
 
-	close(fd);
+	// close(fd);
 	return 0;
 }
 
@@ -182,6 +182,33 @@ static int net_release(const char *path, struct fuse_file_info *fi) { return 0; 
 static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) { return 0; }
 
 static int net_getxattr(const char *path, const char *name, const char *value, size_t size) { return 0; }
+
+static int net_access(const char *path, int mask)
+{
+	int result;
+
+	result = access(path, mask);
+	if (result < 0)
+		return -errno;
+
+	return result;
+}
+
+#ifdef HAVE_UTIMENSAT
+static int xmp_utimens(const char *path, const struct timespec ts[2],
+					   struct fuse_file_info *fi)
+{
+	(void)fi;
+	int result;
+
+	/* don't use utime/utimes since they follow symlinks */
+	result = utimensat(0, path, ts, AT_SYMLINK_NOFOLLOW);
+	if (result == -1)
+		return -errno;
+
+	return 0;
+}
+#endif
 
 static int net_opendir(const char *path, struct fuse_file_info *fi)
 {
@@ -243,11 +270,10 @@ static void *client_handler(void *cf)
 		if (data_size <= 0)
 			break;
 
-		printf("Called syscall: %d\n", request.syscall);
+		// printf("Called syscall: %d\n", request.syscall);
 
 		int result = 0;
 
-		// char *fullpath = malloc(strlen(request.path) + strlen(config.mount_point) + 1);
 		char fullpath[strlen(request.path) + strlen(config.mount_point) + 1];
 		strncpy(fullpath, config.mount_point, strlen(config.mount_point) - 1);
 		strcat(fullpath, request.path);
@@ -261,12 +287,6 @@ static void *client_handler(void *cf)
 			write(cfd, &response, sizeof(struct response));
 			break;
 		}
-		// case sys_mknod:
-		// {
-		// 	result = net_mknod(fullpath, request.mode, request.dev);
-		// 	write(cfd, &result, sizeof(result));
-		// 	break;
-		// }
 		case sys_mkdir:
 		{
 			result = net_mkdir(fullpath, request.mode);
@@ -325,7 +345,7 @@ static void *client_handler(void *cf)
 			write(cfd, &response, sizeof(struct rw_response));
 			write(cfd, buffer, response.size);
 
-			printf("Should read: %d + %d = %d\n", sizeof(struct rw_response), response.size, sizeof(struct rw_response) + response.size);
+			// printf("Should read: %d + %d = %d\n", sizeof(struct rw_response), response.size, sizeof(struct rw_response) + response.size);
 
 			free(buffer);
 			break;
@@ -337,11 +357,18 @@ static void *client_handler(void *cf)
 
 			char *buffer = malloc(request.size);
 			read(cfd, buffer, request.size);
+
+			// printf("%s\n", "write");
+			printf("buff: %s\n", buffer);
+			// printf("len: %d\n", strlen((char *)buffer));
+			printf("size: %d\n", request.size);
+
+			// response.status = 0;
 			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi);
 			write(cfd, &response, sizeof(struct response));
 
 			free(buffer);
-			break;
+			return;
 		}
 		case sys_statfs:
 			break;
@@ -353,6 +380,16 @@ static void *client_handler(void *cf)
 			break;
 		case sys_getxattr:
 			break;
+		case sys_access:
+		{
+			result = net_access(fullpath, request.mask);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_utimens:
+		{
+			break;
+		}
 		case sys_opendir:
 		{
 			result = net_opendir(fullpath, &request.fi);

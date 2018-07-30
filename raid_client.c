@@ -10,6 +10,7 @@
 #include <netinet/ip.h> /* superset of previous */
 #include <unistd.h>
 #include <arpa/inet.h>
+#include <pthread.h>
 #include "vector.h"
 
 struct client_config
@@ -29,7 +30,10 @@ struct raid_storage
 	vector servers;
 };
 
-void parse_config(const char *config_file, vector *storages, struct client_config *config)
+static vector storages;
+static int storage_index;
+
+static void parse_config(const char *config_file, vector *storages, struct client_config *config)
 {
 	FILE *file = fopen(config_file, "r");
 	if (file == NULL)
@@ -80,7 +84,7 @@ void parse_config(const char *config_file, vector *storages, struct client_confi
 		if (strncmp(line, "mountpoint", strlen("mountpoint")) == 0)
 		{
 			struct raid_storage *storage = vector_last(storages);
-			strncpy(storage->mount_point, line + strlen("mountpoint = "), strlen(line) - strlen("mountpoint = "));
+			strncpy(storage->mount_point, line + strlen("mountpoint = "), strlen(line) - strlen("mountpoint = ") - 1);
 		}
 
 		/* Hotswap. */
@@ -113,18 +117,102 @@ void parse_config(const char *config_file, vector *storages, struct client_confi
 	fclose(file);
 }
 
-void print_fn(void *elem, void *aux)
+static void print_fn(void *elem, void *aux)
 {
 	fprintf(stdout, "%s\n", (char *)elem);
 }
 
-static int send_data(struct request request, void *buffer, size_t size)
+struct thread_data
 {
+	struct request request;
+	void *buffer;
+	size_t size;
+	char *ip;
+	int port;
+};
+
+static int send_data(void *arg)
+{
+	struct thread_data data = *(struct thread_data *)arg;
+	struct request request = data.request;
+	void *buffer = data.buffer;
+	char *ip = data.ip;
+	int port = data.port;
+	size_t size = data.size;
+
+	printf("%s:%d\n", ip, port);
+	printf("%s %d", request.path, request.syscall);
+
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
-	addr.sin_port = htons(5000);
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(ip);
+
+	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	write(sfd, &request, sizeof(request));
+
+	int status = -errno;
+	if (buffer != NULL)
+	{
+		struct response response;
+		read(sfd, &response, sizeof(struct response));
+		status = response.status;
+		memcpy(buffer, response.data, size);
+	}
+	else
+		read(sfd, &status, sizeof(status));
+
+	close(sfd);
+	return status;
+}
+
+static int raid_controller(struct request request, void *buffer, size_t size)
+{
+	size_t thread_count = 2;
+	pthread_t threads[thread_count];
+	int return_values[thread_count];
+
+	struct thread_data data[thread_count];
+	struct raid_storage *s = vector_nth(&storages, storage_index);
+
+	size_t i;
+	for (i = 0; i < thread_count; i++)
+	{
+		data[i].request = request;
+		data[i].buffer = buffer;
+		data[i].size = size;
+
+		char *server = vector_nth(&s->servers, i);
+
+		data[i].ip = strsep(&server, ":");
+		data[i].port = atoi(strsep(&server, ":"));
+
+		// printf("%s:%d\n", data[i].ip, data[i].port);
+
+		pthread_create(&threads[i], NULL, &send_data, &data[i]);
+	}
+
+	for (i = 0; i < thread_count; i++)
+		pthread_join(threads[i], (void **)&return_values[i]);
+
+	// TODO: Check if both were successful.
+	// for (i = 0; i < thread_count; i++)
+	// 	printf("%d\n", return_values[i]);
+
+	return return_values[0];
+}
+
+static int raid_controller2(struct request request, void *buffer, size_t size)
+{
+	printf("22 %d\n", request.syscall);
+
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(10001);
 	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
 
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
@@ -152,12 +240,7 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	request.syscall = sys_getattr;
 	strcpy(request.path, path);
 
-	int status = send_data(request, (void *)stbuf, sizeof(struct stat));
-	// TODO: აქ არ მუშაობს რაღაც.
-
-	// printf("Getattr status: %d\n", status);
-	// printf("Gettatr uid: %d\n", stbuf->st_uid);
-	// printf("Gettatr size: %d\n", stbuf->st_size);
+	int status = raid_controller(request, (void *)stbuf, sizeof(struct stat));
 
 	return status;
 }
@@ -171,7 +254,7 @@ static int net_mknod(const char *path, mode_t mode, dev_t dev)
 	request.mode = mode;
 	request.dev = dev;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_mkdir(const char *path, mode_t mode)
@@ -182,7 +265,7 @@ static int net_mkdir(const char *path, mode_t mode)
 	strcpy(request.path, path);
 	request.mode = mode;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_unlink(const char *path)
@@ -192,7 +275,7 @@ static int net_unlink(const char *path)
 	request.syscall = sys_unlink;
 	strcpy(request.path, path);
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_rmdir(const char *path)
@@ -202,7 +285,7 @@ static int net_rmdir(const char *path)
 	request.syscall = sys_rmdir;
 	strcpy(request.path, path);
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_rename(const char *path, const char *new_path)
@@ -213,7 +296,7 @@ static int net_rename(const char *path, const char *new_path)
 	strcpy(request.path, path);
 	strcpy(request.new_path, new_path);
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_link(const char *path, const char *new_path)
@@ -224,7 +307,7 @@ static int net_link(const char *path, const char *new_path)
 	strcpy(request.path, path);
 	strcpy(request.new_path, new_path);
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
@@ -237,7 +320,7 @@ static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 	request.mode = mode;
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
@@ -251,7 +334,7 @@ static int net_truncate(const char *path, off_t offset, struct fuse_file_info *f
 	if (fi != NULL)
 		request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 	// return 0;
 }
 
@@ -264,7 +347,7 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	strcpy(request.path, path);
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int read_write(struct request request, char *read_buffer, const char *write_buffer)
@@ -362,7 +445,7 @@ static int net_opendir(const char *path, struct fuse_file_info *fi)
 	strcpy(request.path, path);
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
@@ -376,7 +459,7 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	request.fi = *fi;
 
 	char *dirlist = malloc(DATA_SIZE);
-	int result = send_data(request, dirlist, DATA_SIZE);
+	int result = raid_controller(request, dirlist, DATA_SIZE);
 
 	char *dir = strtok(dirlist, "|");
 	while (dir != NULL)
@@ -404,7 +487,7 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	request.mode = mode;
 	request.fi = *fi;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int net_access(const char *path, int mask)
@@ -416,7 +499,7 @@ static int net_access(const char *path, int mask)
 	strcpy(request.path, path);
 	request.mask = mask;
 
-	return send_data(request, NULL, 0);
+	return raid_controller(request, NULL, 0);
 }
 
 static int xmp_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) { return 0; }
@@ -448,31 +531,50 @@ struct fuse_operations net_oper = {
 	.create = net_create,
 };
 
+static char *concat(const char *s1, const char *s2)
+{
+	char *result = malloc(strlen(s1) + strlen(s2) + 1);
+	strcpy(result, s1);
+	strcat(result, s2);
+
+	return result;
+}
+
 int main(int argc, char *argv[])
 {
-	// if (argc <= 1)
-	// {
-	// 	fprintf(stderr, "%s\n", "Please provide a configuration file");
-	// 	exit(EXIT_FAILURE);
-	// }
+	if (argc <= 1)
+	{
+		fprintf(stderr, "%s\n", "Please provide a configuration file");
+		exit(EXIT_FAILURE);
+	}
 
-	// vector storages;
-	// struct client_config config;
+	struct client_config config;
 
-	// vector_new(&storages, sizeof(struct raid_storage), NULL, 2);
-	// parse_config((char *)argv[1], &storages, &config);
+	vector_new(&storages, sizeof(struct raid_storage), NULL, 2);
+	parse_config((char *)argv[1], &storages, &config);
 
 	// fprintf(stdout, "%s\n", config.error_log);
 	// fprintf(stdout, "%s\n", config.cache_size);
 	// fprintf(stdout, "%s\n", config.cache_replacement);
 	// fprintf(stdout, "%d\n", config.timeout);
 
-	// struct raid_storage *s = vector_last(&storages);
+	struct raid_storage *s = vector_nth(&storages, 0);
 	// fprintf(stdout, "%s\n", s->disk_name);
 	// fprintf(stdout, "%s\n", s->mount_point);
 	// fprintf(stdout, "%s\n", s->hot_swap);
 	// fprintf(stdout, "%d\n", s->raid);
 	// vector_map(&s->servers, &print_fn, NULL);
 
-	return fuse_main(argc, argv, &net_oper, NULL);
+	int arg = 4;
+	char *args[arg + 1];
+	args[0] = "./server";
+	args[1] = s->mount_point;
+	args[2] = "-f";
+	args[3] = "-s";
+	args[4] = NULL;
+
+	// struct request r;
+	// raid_controller(r, NULL, 0);
+
+	return fuse_main(arg, args, &net_oper, NULL);
 }

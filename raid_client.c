@@ -332,8 +332,12 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	request.offset = offset;
 	request.fi = *fi;
 
-	return read_write(request, NULL, buffer);
-	// return 0;
+	void *cache = malloc(size);
+	memcpy(cache, buffer, size);
+	int status = read_write(request, NULL, cache);
+
+	free(cache);
+	return status;
 }
 
 static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
@@ -469,11 +473,6 @@ int main(int argc, char *argv[])
 	// fprintf(stdout, "%s\n", s->hot_swap);
 	// fprintf(stdout, "%d\n", s->raid);
 	// vector_map(&s->servers, &print_fn, NULL);
-
-	// net_opendir("tazuna/123/goch", NULL);
-	// net_getattr("tazuna/123/goch", NULL, 7);
-	// net_open("tazuna/123/goch", 7);
-	// net_readdir("tazuna/123/goch", NULL, NULL, 5, 7);
 
 	return fuse_main(argc, argv, &net_oper, NULL);
 }

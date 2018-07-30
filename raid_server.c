@@ -34,7 +34,6 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	// 	stbuf->st_nlink = 2;
 	// }
 	// else
-	// int fd = open(path, fi->flags);
 	result = lstat(path, stbuf);
 
 	// printf("getattr status: %d\n", result);
@@ -140,6 +139,7 @@ static int net_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 static int net_open(const char *path, struct fuse_file_info *fi)
 {
 	int fd = open(path, fi->flags);
+	// fi->fh = 
 
 	if (fd < 0)
 		return -errno;
@@ -152,12 +152,12 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 {
 	int result;
 
-	// printf("size: %d, offset: %d\n", size, offset);
 	int fd = open(path, fi->flags);
 	result = pread(fd, buffer, size, offset);
 	if (result < 0)
 		return -errno;
 
+	printf("path: %s, size: %d read: %d\n", path, size, result);
 	close(fd);
 	return result;
 }
@@ -166,6 +166,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 {
 	int result;
 
+	printf("path: %s, size: %d\n", path, size);
 	int fd = open(path, fi->flags);
 	result = pwrite(fd, buffer, size, offset);
 	if (result < 0)
@@ -197,7 +198,7 @@ static int net_access(const char *path, int mask)
 }
 
 #ifdef HAVE_UTIMENSAT
-static int xmp_utimens(const char *path, const struct timespec ts[2],
+static int net_utimens(const char *path, const struct timespec ts[2],
 					   struct fuse_file_info *fi)
 {
 	(void)fi;
@@ -272,7 +273,7 @@ static void *client_handler(void *cf)
 		if (data_size <= 0)
 			break;
 
-		printf("Called syscall: %d\n", request.syscall);
+		// printf("Called syscall: %d\n", request.syscall);
 		int result = 0;
 
 		char fullpath[strlen(request.path) + strlen(config.mount_point) + 1];
@@ -349,7 +350,7 @@ static void *client_handler(void *cf)
 			struct rw_response response;
 			response.size = request.size;
 
-			void *buffer = malloc(response.size);
+			char *buffer = malloc(response.size);
 			response.status = net_read(fullpath, buffer, request.size, request.offset, &request.fi);
 			write(cfd, &response, sizeof(struct rw_response));
 			write(cfd, buffer, response.size);
@@ -367,9 +368,9 @@ static void *client_handler(void *cf)
 			read(cfd, buffer, request.size);
 
 			// printf("%s\n", "write");
-			printf("buff: %s\n", buffer);
+			// printf("buff: %s\n", buffer);
 			// printf("len: %d\n", strlen((char *)buffer));
-			printf("size: %d\n", request.size);
+			// printf("size: %d\n", request.size);
 
 			// response.status = 0;
 			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi);
@@ -474,6 +475,3 @@ int main(int argc, char *argv[])
 
 	return 0;
 }
-
-// -------------------------------------- //
-/* fi-ები შევინახო და release დავწერო ნორმალურად. */

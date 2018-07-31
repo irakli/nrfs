@@ -122,27 +122,8 @@ static void print_fn(void *elem, void *aux)
 	fprintf(stdout, "%s\n", (char *)elem);
 }
 
-struct thread_data
+static int send_data(struct request request, void *buffer, size_t size, char *ip, int port)
 {
-	struct request request;
-	void *buffer;
-	size_t size;
-	char *ip;
-	int port;
-};
-
-static int send_data(void *arg)
-{
-	struct thread_data data = *(struct thread_data *)arg;
-	struct request request = data.request;
-	void *buffer = data.buffer;
-	char *ip = data.ip;
-	int port = data.port;
-	size_t size = data.size;
-
-	printf("%s:%d\n", ip, port);
-	printf("%s %d", request.path, request.syscall);
-
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
@@ -151,6 +132,7 @@ static int send_data(void *arg)
 	addr.sin_addr.s_addr = inet_addr(ip);
 
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	printf("Connecting to: %s:%d\n", ip, port);
 	write(sfd, &request, sizeof(request));
 
 	int status = -errno;
@@ -168,43 +150,7 @@ static int send_data(void *arg)
 	return status;
 }
 
-static int raid_controller(struct request request, void *buffer, size_t size)
-{
-	size_t thread_count = 2;
-	pthread_t threads[thread_count];
-	int return_values[thread_count];
-
-	struct thread_data data[thread_count];
-	struct raid_storage *s = vector_nth(&storages, storage_index);
-
-	size_t i;
-	for (i = 0; i < thread_count; i++)
-	{
-		data[i].request = request;
-		data[i].buffer = buffer;
-		data[i].size = size;
-
-		char *server = vector_nth(&s->servers, i);
-
-		data[i].ip = strsep(&server, ":");
-		data[i].port = atoi(strsep(&server, ":"));
-
-		// printf("%s:%d\n", data[i].ip, data[i].port);
-
-		pthread_create(&threads[i], NULL, &send_data, &data[i]);
-	}
-
-	for (i = 0; i < thread_count; i++)
-		pthread_join(threads[i], (void **)&return_values[i]);
-
-	// TODO: Check if both were successful.
-	// for (i = 0; i < thread_count; i++)
-	// 	printf("%d\n", return_values[i]);
-
-	return return_values[0];
-}
-
-static int raid_controller2(struct request request, void *buffer, size_t size)
+static int send_data2(struct request request, void *buffer, size_t size)
 {
 	printf("22 %d\n", request.syscall);
 
@@ -231,6 +177,29 @@ static int raid_controller2(struct request request, void *buffer, size_t size)
 
 	close(sfd);
 	return status;
+}
+
+static int raid_controller(struct request request, void *buffer, size_t size)
+{
+	// TODO: Don't forget different read/write calls.
+	size_t server_count = 2;
+
+	struct raid_storage *s = vector_nth(&storages, storage_index);
+	int return_values[server_count];
+
+	size_t i;
+	for (i = 0; i < server_count; i++)
+	{
+		char *server = strdup(vector_nth(&s->servers, i));
+
+		char *ip = strsep(&server, ":");
+		int port = atoi(strsep(&server, ":"));
+		return_values[i] = send_data(request, buffer, size, ip, port);
+
+		free(server);
+	}
+
+	return return_values[0];
 }
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)

@@ -139,7 +139,7 @@ static int net_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 static int net_open(const char *path, struct fuse_file_info *fi)
 {
 	int fd = open(path, fi->flags);
-	// fi->fh = 
+	// fi->fh =
 
 	if (fd < 0)
 		return -errno;
@@ -273,7 +273,7 @@ static void *client_handler(void *cf)
 		if (data_size <= 0)
 			break;
 
-		// printf("Called syscall: %d\n", request.syscall);
+		printf("Called syscall: %d\n", request.syscall);
 		int result = 0;
 
 		char fullpath[strlen(request.path) + strlen(config.mount_point) + 1];
@@ -467,6 +467,7 @@ int main(int argc, char *argv[])
 	{
 		socklen_t size = sizeof(struct sockaddr_in);
 		cfd = accept(sfd, (struct sockaddr *)&peer_addr, &size);
+		printf("Accepted incoming connection...\n");
 
 		pthread_t p;
 		pthread_create(&p, NULL, &client_handler, &cfd);

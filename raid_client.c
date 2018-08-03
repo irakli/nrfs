@@ -179,6 +179,7 @@ static int send_data2(struct request request, void *buffer, size_t size)
 	return status;
 }
 
+// Thread-ებში გაშვება შეიძლება read/write-ის გარდა დანარჩენის, მანამდე როგორც მქონდა.
 static int raid_controller(struct request request, void *buffer, size_t size)
 {
 	// TODO: Don't forget different read/write calls.
@@ -304,7 +305,6 @@ static int net_truncate(const char *path, off_t offset, struct fuse_file_info *f
 		request.fi = *fi;
 
 	return raid_controller(request, NULL, 0);
-	// return 0;
 }
 
 static int net_open(const char *path, struct fuse_file_info *fi)
@@ -319,14 +319,14 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	return raid_controller(request, NULL, 0);
 }
 
-static int read_write(struct request request, char *read_buffer, const char *write_buffer)
+static int read_write(struct request request, char *read_buffer, const char *write_buffer, char *ip, int port)
 {
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
-	addr.sin_port = htons(5000);
-	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(ip);
 
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	write(sfd, &request, sizeof(request));
@@ -356,6 +356,28 @@ static int read_write(struct request request, char *read_buffer, const char *wri
 	return status;
 }
 
+static int rw_raid_controller(struct request request, char *read_buffer, const char *write_buffer)
+{
+	size_t server_count = 2;
+
+	struct raid_storage *s = vector_nth(&storages, storage_index);
+	int return_values[server_count];
+
+	size_t i;
+	for (i = 0; i < server_count; i++)
+	{
+		char *server = strdup(vector_nth(&s->servers, i));
+
+		char *ip = strsep(&server, ":");
+		int port = atoi(strsep(&server, ":"));
+		return_values[i] = read_write(request, read_buffer, write_buffer, ip, port);
+
+		free(server);
+	}
+
+	return return_values[0];
+}
+
 static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
 {
 	printf("%s\n", "read");
@@ -367,7 +389,7 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	request.offset = offset;
 	request.fi = *fi;
 
-	return read_write(request, buffer, NULL);
+	return rw_raid_controller(request, buffer, NULL);
 }
 
 static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
@@ -386,7 +408,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 
 	void *cache = malloc(size);
 	memcpy(cache, buffer, size);
-	int status = read_write(request, NULL, cache);
+	int status = rw_raid_controller(request, NULL, cache);
 
 	free(cache);
 	return status;

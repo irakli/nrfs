@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <sys/xattr.h>
 #include <string.h>
 #include <netinet/in.h>
 #include <netinet/ip.h> /* superset of previous */
@@ -22,6 +23,7 @@ struct server_config
 };
 
 struct server_config config;
+enum syscalls last_syscall;
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
@@ -170,17 +172,17 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	int fd = open(path, fi->flags);
 	result = pwrite(fd, buffer, size, offset);
 
-	close(fd);
-
 	unsigned char digest[MD5_DIGEST_LENGTH];
 	MD5_CTX context;
 	MD5_Init(&context);
 	MD5_Update(&context, buffer, size);
 	MD5_Final(digest, &context);
 
+	// if (result < 0)
 	if (result < 0 || (strncmp(digest, request_digest, MD5_DIGEST_LENGTH) != 0))
 		return -errno;
 
+	close(fd);
 	return result;
 }
 
@@ -188,15 +190,61 @@ static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
 
 static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
 
-static int net_release(const char *path, struct fuse_file_info *fi)
+static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags)
 {
-	// TODO: Calculate file hash if last syscall was write.
-	return 0;
+	int result;
+
+	printf("path: %s\n name: %s\n value: %s\n size: %zu\n flags: %d\n", path, name, value, size, flags);
+
+	result = setxattr(path, name, value, size, flags);
+	if (result < 0)
+		return -errno;
+
+	printf("\n\n\n dauyenda jigaro\n");
+	return result;
 }
 
-static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) { return 0; }
+static int net_getxattr(const char *path, const char *name, const char *value, size_t size)
+{
+	int result;
 
-static int net_getxattr(const char *path, const char *name, const char *value, size_t size) { return 0; }
+	result = getxattr(path, name, value, size);
+	if (result < 0)
+		return -errno;
+
+	return result;
+}
+
+static int net_release(const char *path, struct fuse_file_info *fi)
+{
+	/* If the last syscall before this one was write, that means that
+	   the client has finished writing a file and we can calculate its hash. */
+	if (last_syscall == sys_write)
+	{
+		unsigned char digest[MD5_DIGEST_LENGTH];
+		FILE *file = fopen(path, "rb");
+		MD5_CTX context;
+		int bytes;
+		unsigned char data[DATA_SIZE];
+
+		MD5_Init(&context);
+		while ((bytes = fread(data, 1, DATA_SIZE, file)) != 0)
+			MD5_Update(&context, data, bytes);
+		MD5_Final(digest, &context);
+
+		// TODO: Set as xattributes.
+		char name[] = "hash";
+		net_setxattr(path, name, digest, MD5_DIGEST_LENGTH, 0);
+
+		int i;
+		for (i = 0; i < MD5_DIGEST_LENGTH; i++)
+			printf("%02x", digest[i]);
+
+		printf(" %s\n", path);
+		fclose(file);
+	}
+	return 0;
+}
 
 static int net_access(const char *path, int mask)
 {
@@ -402,7 +450,11 @@ static void *client_handler(void *cf)
 		case sys_flush:
 			break;
 		case sys_release:
+		{
+			result = net_release(fullpath, &request.fi);
+			write(cfd, &result, sizeof(result));
 			break;
+		}
 		case sys_setxattr:
 			break;
 		case sys_getxattr:
@@ -443,6 +495,8 @@ static void *client_handler(void *cf)
 			write(cfd, &result, sizeof(result));
 			break;
 		}
+
+		last_syscall = request.syscall;
 	}
 
 	close(cfd);

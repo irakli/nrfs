@@ -433,6 +433,15 @@ static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
 
 static int net_release(const char *path, struct fuse_file_info *fi)
 {
+	printf("%s: %s \n", "release", path);
+
+	struct request request;
+	request.syscall = sys_release;
+	strcpy(request.path, path);
+	request.fi = *fi;
+
+	raid_controller(request, NULL, 0);
+
 	return 0;
 }
 

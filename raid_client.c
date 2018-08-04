@@ -329,11 +329,11 @@ static int read_write(struct request request, char *read_buffer, const char *wri
 	addr.sin_addr.s_addr = inet_addr(ip);
 
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
-	write(sfd, &request, sizeof(request));
 
 	int status = -errno;
 	if (read_buffer != NULL)
 	{
+		write(sfd, &request, sizeof(request));
 		struct rw_response response;
 		read(sfd, &response, sizeof(struct rw_response));
 		status = response.status;
@@ -343,6 +343,19 @@ static int read_write(struct request request, char *read_buffer, const char *wri
 	}
 	else if (write_buffer != NULL)
 	{
+		MD5_CTX context;
+		MD5_Init(&context);
+		MD5_Update(&context, write_buffer, request.size);
+		MD5_Final(request.digest, &context);
+
+		int i = 0;
+		for (i = 0; i < MD5_DIGEST_LENGTH; i++)
+			printf("%02x", request.digest[i]);
+		printf("\n");
+
+		// printf("Hash: %s\n", request.digest);
+		write(sfd, &request, sizeof(request));
+
 		// printf("%s\n", write_buffer);
 		// printf("len: %d\n", strlen((char *)write_buffer));
 		// printf("size: %d\n", request.size);

@@ -1,5 +1,6 @@
 #define FUSE_USE_VERSION 31
 #include <fuse.h>
+#include <openssl/md5.h>
 
 #define MAX_NAME_LENGTH 128
 #define MAX_PATH_LENGTH 256
@@ -45,6 +46,7 @@ struct __attribute__((__packed__)) request
 	off_t offset;
 	size_t size;
 
+	unsigned char digest[MD5_DIGEST_LENGTH];
 	struct fuse_file_info fi;
 };
 
@@ -63,3 +65,7 @@ struct __attribute__((__packed__)) rw_response
 // gcc -Wall raid_server.c vector.c `pkg-config fuse --cflags --libs` -o server.out -lpthread
 // gcc -Wall raid_client.c vector.c `pkg-config fuse --cflags --libs` -o client.out
 // fusermount -uz ~/code/final/filesystem/mount
+
+// ./server.out 127.0.0.1 10001 server1/
+// ./server.out 127.0.0.1 10002 server2/
+// ./client.out config.cfg

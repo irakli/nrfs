@@ -162,17 +162,25 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	return result;
 }
 
-static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
+static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi, unsigned char request_digest[MD5_DIGEST_LENGTH])
 {
 	int result;
 
 	printf("path: %s, size: %d\n", path, size);
 	int fd = open(path, fi->flags);
 	result = pwrite(fd, buffer, size, offset);
-	if (result < 0)
-		return -errno;
 
 	close(fd);
+
+	unsigned char digest[MD5_DIGEST_LENGTH];
+	MD5_CTX context;
+	MD5_Init(&context);
+	MD5_Update(&context, buffer, size);
+	MD5_Final(digest, &context);
+
+	if (result < 0 || (strncmp(digest, request_digest, MD5_DIGEST_LENGTH) != 0))
+		return -errno;
+
 	return result;
 }
 
@@ -180,7 +188,11 @@ static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
 
 static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
 
-static int net_release(const char *path, struct fuse_file_info *fi) { return 0; }
+static int net_release(const char *path, struct fuse_file_info *fi)
+{
+	// TODO: Calculate file hash if last syscall was write.
+	return 0;
+}
 
 static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags) { return 0; }
 
@@ -372,8 +384,14 @@ static void *client_handler(void *cf)
 			// printf("len: %d\n", strlen((char *)buffer));
 			// printf("size: %d\n", request.size);
 
+			// int i;
+			// printf("\nGiven hash: ");
+			// for (i = 0; i < MD5_DIGEST_LENGTH; i++)
+			// 	printf("%02x", request.digest[i]);
+			// printf("\n");
+
 			// response.status = 0;
-			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi);
+			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi, &request.digest);
 			write(cfd, &response, sizeof(struct rw_response));
 
 			free(buffer);
@@ -467,7 +485,7 @@ int main(int argc, char *argv[])
 	{
 		socklen_t size = sizeof(struct sockaddr_in);
 		cfd = accept(sfd, (struct sockaddr *)&peer_addr, &size);
-		printf("Accepted incoming connection...\n");
+		// printf("Accepted incoming connection...\n");
 
 		pthread_t p;
 		pthread_create(&p, NULL, &client_handler, &cfd);

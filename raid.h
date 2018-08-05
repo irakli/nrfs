@@ -6,6 +6,8 @@
 #define MAX_PATH_LENGTH 256
 #define MAX_IP_LENGTH 24 // 255.255.255.255:65535 (22)
 #define DATA_SIZE 4096
+#define HASH_MISMATCH 1337
+#define HASH_XATTR "user.hash"
 
 enum syscalls
 {
@@ -54,6 +56,8 @@ struct __attribute__((__packed__)) response
 {
 	int status;
 	char data[DATA_SIZE];
+
+	char actual_hash[MD5_DIGEST_LENGTH * 2];
 };
 
 struct __attribute__((__packed__)) rw_response

@@ -25,6 +25,28 @@ struct server_config
 struct server_config config;
 enum syscalls last_syscall;
 
+static void get_hash(const char *path, char result[MD5_DIGEST_LENGTH * 2])
+{
+	unsigned char digest[MD5_DIGEST_LENGTH];
+	FILE *file = fopen(path, "rb");
+	MD5_CTX context;
+	int bytes;
+	unsigned char data[DATA_SIZE];
+
+	MD5_Init(&context);
+	while ((bytes = fread(data, 1, DATA_SIZE, file)) != 0)
+		MD5_Update(&context, data, bytes);
+	MD5_Final(digest, &context);
+
+	char temp[MD5_DIGEST_LENGTH * 2];
+	int i;
+	for (i = 0; i < MD5_DIGEST_LENGTH; i++)
+	{
+		sprintf(temp, "%02x", digest[i]);
+		strcat(result, temp);
+	}
+}
+
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
 	int result = 0;
@@ -138,10 +160,17 @@ static int net_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int net_open(const char *path, struct fuse_file_info *fi)
+static int net_open(const char *path, struct fuse_file_info *fi, char actual_hash[MD5_DIGEST_LENGTH * 2])
 {
 	int fd = open(path, fi->flags);
-	// fi->fh =
+
+	// check if the hash სავპადეტსია.
+	get_hash(path, actual_hash);
+	char saved_hash[MD5_DIGEST_LENGTH * 2];
+	getxattr(path, HASH_XATTR, saved_hash, MD5_DIGEST_LENGTH * 2);
+
+	if (strncmp(actual_hash, saved_hash, MD5_DIGEST_LENGTH * 2) != 0)
+		return -HASH_MISMATCH;
 
 	if (fd < 0)
 		return -errno;
@@ -221,32 +250,14 @@ static int net_release(const char *path, struct fuse_file_info *fi)
 	   the client has finished writing a file and we can calculate its hash. */
 	if (last_syscall == sys_write)
 	{
-		unsigned char digest[MD5_DIGEST_LENGTH];
-		FILE *file = fopen(path, "rb");
-		MD5_CTX context;
-		int bytes;
-		unsigned char data[DATA_SIZE];
+		char hash[MD5_DIGEST_LENGTH * 2];
+		get_hash(path, hash);
 
-		MD5_Init(&context);
-		while ((bytes = fread(data, 1, DATA_SIZE, file)) != 0)
-			MD5_Update(&context, data, bytes);
-		MD5_Final(digest, &context);
+		char name[] = HASH_XATTR;
+		net_setxattr(path, name, hash, strlen(hash), 0);
 
-		char dig[MD5_DIGEST_LENGTH * 2];
-		char temp[MD5_DIGEST_LENGTH * 2];
-		int i;
-		for (i = 0; i < MD5_DIGEST_LENGTH; i++)
-		{
-			sprintf(temp, "%02x", digest[i]);
-			strcat(dig, temp);
-		}
-
-		char name[] = "user.hash";
-		net_setxattr(path, name, dig, strlen(dig), 0);
-
-		printf("%s", dig);
+		printf("%s", hash);
 		printf(" %s\n", path);
-		fclose(file);
 	}
 
 	return 0;
@@ -407,8 +418,9 @@ static void *client_handler(void *cf)
 		}
 		case sys_open:
 		{
-			result = net_open(fullpath, &request.fi);
-			write(cfd, &result, sizeof(result));
+			struct response response;
+			result = net_open(fullpath, &request.fi, response.actual_hash);
+			write(cfd, &response, sizeof(result));
 			break;
 		}
 		case sys_read:

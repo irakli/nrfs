@@ -136,35 +136,13 @@ static int send_data(struct request request, void *buffer, size_t size, char *ip
 	write(sfd, &request, sizeof(request));
 
 	int status = -errno;
-	if (buffer != NULL)
+
+	if (request.syscall == sys_open)
 	{
 		struct response response;
 		read(sfd, &response, sizeof(struct response));
 		status = response.status;
-		memcpy(buffer, response.data, size);
 	}
-	else
-		read(sfd, &status, sizeof(status));
-
-	close(sfd);
-	return status;
-}
-
-static int send_data2(struct request request, void *buffer, size_t size)
-{
-	printf("22 %d\n", request.syscall);
-
-	int sfd = socket(AF_INET, SOCK_STREAM, 0);
-
-	struct sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(10001);
-	addr.sin_addr.s_addr = inet_addr("127.0.0.1");
-
-	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
-	write(sfd, &request, sizeof(request));
-
-	int status = -errno;
 	if (buffer != NULL)
 	{
 		struct response response;
@@ -198,6 +176,9 @@ static int raid_controller(struct request request, void *buffer, size_t size)
 
 		free(server);
 	}
+
+	// TODO: აქანა აღადგინე ბიჭიკო.
+	// if (return_values[0] == 0 && )
 
 	return return_values[0];
 }

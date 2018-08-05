@@ -194,13 +194,12 @@ static int net_setxattr(const char *path, const char *name, const char *value, s
 {
 	int result;
 
-	printf("path: %s\n name: %s\n value: %s\n size: %zu\n flags: %d\n", path, name, value, size, flags);
+	// printf("path: %s\n name: %s\n value: %s\n size: %zu\n flags: %d\n", path, name, value, size, flags);
 
 	result = setxattr(path, name, value, size, flags);
 	if (result < 0)
 		return -errno;
 
-	printf("\n\n\n dauyenda jigaro\n");
 	return result;
 }
 
@@ -215,6 +214,7 @@ static int net_getxattr(const char *path, const char *name, const char *value, s
 	return result;
 }
 
+// TODO: Can be optimized by calling MD5_Update on write and MD5_Final here.
 static int net_release(const char *path, struct fuse_file_info *fi)
 {
 	/* If the last syscall before this one was write, that means that
@@ -232,17 +232,23 @@ static int net_release(const char *path, struct fuse_file_info *fi)
 			MD5_Update(&context, data, bytes);
 		MD5_Final(digest, &context);
 
-		// TODO: Set as xattributes.
-		char name[] = "hash";
-		net_setxattr(path, name, digest, MD5_DIGEST_LENGTH, 0);
-
+		char dig[MD5_DIGEST_LENGTH * 2];
+		char temp[MD5_DIGEST_LENGTH * 2];
 		int i;
 		for (i = 0; i < MD5_DIGEST_LENGTH; i++)
-			printf("%02x", digest[i]);
+		{
+			sprintf(temp, "%02x", digest[i]);
+			strcat(dig, temp);
+		}
 
+		char name[] = "user.hash";
+		net_setxattr(path, name, dig, strlen(dig), 0);
+
+		printf("%s", dig);
 		printf(" %s\n", path);
 		fclose(file);
 	}
+
 	return 0;
 }
 

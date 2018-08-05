@@ -182,7 +182,6 @@ static int send_data2(struct request request, void *buffer, size_t size)
 // Thread-ებში გაშვება შეიძლება read/write-ის გარდა დანარჩენის, მანამდე როგორც მქონდა.
 static int raid_controller(struct request request, void *buffer, size_t size)
 {
-	// TODO: Don't forget different read/write calls.
 	size_t server_count = 2;
 
 	struct raid_storage *s = vector_nth(&storages, storage_index);

@@ -12,6 +12,7 @@
 #include <errno.h>
 #include <pthread.h>
 #include <dirent.h>
+#include <sys/sendfile.h>
 
 #define BACKLOG 16
 
@@ -337,7 +338,50 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return 0;
 }
 
-static void net_init(struct fuse_conn_info *conn, struct fuse_config *cfg) {}
+/* Send the file located at the given path to the given server. */
+static int net_restore_send(const char *path, char ip[MAX_IP_LENGTH], int port)
+{
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(ip);
+
+	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+
+	// Get file size.
+	struct stat *stbuf;
+	lstat(path, stbuf);
+
+	// Create request.
+	struct request request;
+	request.syscall = sys_link;
+	request.size = stbuf->st_size;
+	strcpy(request.path, path);
+
+	// Send the request.
+	write(sfd, &request, sizeof(request));
+
+	// Send the file.
+	int fd = open(path, O_RDWR);
+	sendfile(sfd, fd, 0, stbuf->st_size);
+
+	return 0;
+}
+
+static int net_restore_receive(const char *path, size_t size, int sfd)
+{
+	// Read the data from socket.
+	char buffer[size];
+	read(sfd, buffer, size);
+
+	// Write it in the file.
+	int fd = open(path, O_RDWR);
+	write(fd, buffer, size);
+
+	return 0;
+}
 
 static void *client_handler(void *cf)
 {
@@ -505,6 +549,18 @@ static void *client_handler(void *cf)
 		case sys_create:
 		{
 			result = net_create(fullpath, request.mode, &request.fi);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_restore_send:
+		{
+			result = net_restore_send(fullpath, request.ip, request.port);
+			write(cfd, &result, sizeof(result));
+			break;
+		}
+		case sys_restore_receive:
+		{
+			result = net_restore_receive(fullpath, request.size, cfd);
 			write(cfd, &result, sizeof(result));
 			break;
 		}

@@ -34,7 +34,9 @@ enum syscalls
 	sys_readdir,
 	sys_releasedir,
 	sys_create,
-	sys_init
+	sys_init,
+	sys_restore_send,
+	sys_restore_receive
 };
 
 struct __attribute__((__packed__)) request
@@ -50,6 +52,9 @@ struct __attribute__((__packed__)) request
 
 	unsigned char digest[MD5_DIGEST_LENGTH];
 	struct fuse_file_info fi;
+
+	char ip[MAX_IP_LENGTH];
+	int port;
 };
 
 struct __attribute__((__packed__)) response

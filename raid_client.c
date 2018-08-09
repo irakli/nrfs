@@ -153,16 +153,20 @@ static void call_restore(struct request request, int index)
 	char *sender_ip = strsep(&sender, ":");
 	int sender_port = atoi(strsep(&sender, ":"));
 
+	printf("Sender: %s:%d\n", sender_ip, sender_port);
+
 	char *receiver = strdup(vector_nth(&s->servers, !index));
 	char *receiver_ip = strsep(&receiver, ":");
 	int receiver_port = atoi(strsep(&receiver, ":"));
+
+	printf("Receiver: %s:%d\n", receiver_ip, receiver_port);
 
 	// Copy index -> !index
 	struct request send_request;
 	send_request.syscall = sys_restore_send;
 	strcpy(send_request.path, request.path);
 	strcpy(send_request.ip, receiver_ip);
-	request.port = receiver_port;
+	send_request.port = receiver_port;
 
 	// Connect to the sender server.
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -172,7 +176,7 @@ static void call_restore(struct request request, int index)
 	addr.sin_addr.s_addr = inet_addr(sender_ip);
 
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
-	write(sfd, &request, sizeof(send_request));
+	write(sfd, &send_request, sizeof(struct request));
 }
 
 // Thread-ებში გაშვება შეიძლება read/write-ის გარდა დანარჩენის, მანამდე როგორც მქონდა.
@@ -195,20 +199,20 @@ static int raid_controller(struct request request, void *buffer, size_t size)
 		free(server);
 	}
 
-	// TODO: აქანა აღადგინე ბიჭიკო.
-	// if (request.syscall == sys_open)
-	// {
-	// 	if (return_values[0] == 0 && return_values[1] == -HASH_MISMATCH)
-	// 	{
-	// 		printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 0), (char *)vector_nth(&s->servers, 1));
-	// 		call_restore(request, 0);
-	// 	}
-	// 	else if (return_values[0] == -HASH_MISMATCH && return_values[1] == 0)
-	// 	{
-	// 		printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 1), (char *)vector_nth(&s->servers, 0));
-	// 		call_restore(request, 1);
-	// 	}
-	// }
+	// TODO: წაშლილზე არ მუშაობს.
+	if (request.syscall == sys_open)
+	{
+		if (return_values[0] == 0 && return_values[1] == -HASH_MISMATCH)
+		{
+			printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 0), (char *)vector_nth(&s->servers, 1));
+			call_restore(request, 0);
+		}
+		else if (return_values[0] == -HASH_MISMATCH && return_values[1] == 0)
+		{
+			printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 1), (char *)vector_nth(&s->servers, 0));
+			call_restore(request, 1);
+		}
+	}
 
 	return return_values[0];
 }

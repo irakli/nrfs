@@ -327,7 +327,7 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 }
 
 /* Send the file located at the given path to the given server. */
-static int net_restore_send(const char *path, char ip[MAX_IP_LENGTH], int port)
+static int net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
 	printf("vugzavnit ufrosoi %s:%d", ip, port);
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -340,36 +340,47 @@ static int net_restore_send(const char *path, char ip[MAX_IP_LENGTH], int port)
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
 	// Get file size.
-	struct stat *stbuf = NULL;
-	lstat(path, stbuf);
+	struct stat stbuf;
+	stat(fpath, &stbuf);
 
 	// Create request.
 	struct request request;
 	request.syscall = sys_restore_receive;
-	request.size = stbuf->st_size;
+	request.size = stbuf.st_size;
 	strcpy(request.path, path);
 
 	// Send the request.
 	write(sfd, &request, sizeof(request));
 
 	// Send the file.
-	int fd = open(path, O_RDWR);
-	sendfile(sfd, fd, 0, stbuf->st_size);
+	int fd = open(fpath, O_RDWR);
+	sendfile(sfd, fd, 0, stbuf.st_size);
 
 	return 0;
 }
 
-static int net_restore_receive(const char *path, size_t size, int sfd)
+static int net_restore_receive(const char *path, size_t size, int cfd)
 {
-	printf("MOVIDA UFROSO, AGADGINEO DA %s\n", path);
 	// Read the data from socket.
 	char buffer[size];
-	read(sfd, buffer, size);
+	read(cfd, buffer, size);
 
-	// Write it in the file.
+	printf("ebeeeee\n");
+
+	// FILE *file = fopen(path, "ab+");
+
+	// fwrite(buffer, size, 1, file);
+
+	// fclose(file);
+
 	int fd = open(path, O_RDWR);
+	if (fd == -1)
+	{
+		fd = open(path, O_CREAT);
+	}
 	write(fd, buffer, size);
 
+	close(fd);
 	return 0;
 }
 
@@ -541,7 +552,7 @@ static void *client_handler(void *cf)
 		}
 		case sys_restore_send:
 		{
-			result = net_restore_send(fullpath, request.ip, request.port);
+			result = net_restore_send(request.path, fullpath, request.ip, request.port);
 			write(cfd, &result, sizeof(result));
 			break;
 		}

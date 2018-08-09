@@ -73,16 +73,6 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	return result;
 }
 
-static int net_mknod(const char *path, mode_t mode, dev_t dev)
-{
-	int result = mknod(path, mode, dev);
-
-	if (result < 0)
-		return -errno;
-
-	return 0;
-}
-
 static int net_mkdir(const char *path, mode_t mode)
 {
 	int result = mkdir(path, mode);
@@ -161,17 +151,21 @@ static int net_truncate(const char *path, off_t size, struct fuse_file_info *fi)
 	return 0;
 }
 
-static int net_open(const char *path, struct fuse_file_info *fi, char actual_hash[MD5_DIGEST_LENGTH * 2])
+static int net_open(const char *path, struct fuse_file_info *fi)
 {
+	printf("OPEN\n");
 	int fd = open(path, fi->flags);
 
-	// check if the hash სავპადეტსია.
+	char actual_hash[MD5_DIGEST_LENGTH * 2];
 	get_hash(path, actual_hash);
 	char saved_hash[MD5_DIGEST_LENGTH * 2];
 	getxattr(path, HASH_XATTR, saved_hash, MD5_DIGEST_LENGTH * 2);
 
 	if (strncmp(actual_hash, saved_hash, MD5_DIGEST_LENGTH * 2) != 0)
+	{
+		printf("Hash mismatch: %s - %s\n", actual_hash, saved_hash);
 		return -HASH_MISMATCH;
+	}
 
 	if (fd < 0)
 		return -errno;
@@ -189,7 +183,7 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	if (result < 0)
 		return -errno;
 
-	printf("path: %s, size: %d read: %d\n", path, size, result);
+	printf("path: %s, size: %zu read: %d\n", path, size, result);
 	close(fd);
 	return result;
 }
@@ -198,7 +192,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 {
 	int result;
 
-	printf("path: %s, size: %d\n", path, size);
+	printf("path: %s, size: %zu\n", path, size);
 	int fd = open(path, fi->flags);
 	result = pwrite(fd, buffer, size, offset);
 
@@ -209,16 +203,12 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	MD5_Final(digest, &context);
 
 	// if (result < 0)
-	if (result < 0 || (strncmp(digest, request_digest, MD5_DIGEST_LENGTH) != 0))
+	if (result < 0 || (memcmp(digest, request_digest, MD5_DIGEST_LENGTH) != 0))
 		return -errno;
 
 	close(fd);
 	return result;
 }
-
-static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
-
-static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
 
 static int net_setxattr(const char *path, const char *name, const char *value, size_t size, int flags)
 {
@@ -233,7 +223,7 @@ static int net_setxattr(const char *path, const char *name, const char *value, s
 	return result;
 }
 
-static int net_getxattr(const char *path, const char *name, const char *value, size_t size)
+static int net_getxattr(char *path, char *name, char *value, size_t size)
 {
 	int result;
 
@@ -324,8 +314,6 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	return 0;
 }
 
-static int net_releasedir(const char *path, struct fuse_file_info *fi) { return 0; }
-
 static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
 	int result;
@@ -341,6 +329,7 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 /* Send the file located at the given path to the given server. */
 static int net_restore_send(const char *path, char ip[MAX_IP_LENGTH], int port)
 {
+	printf("vugzavnit ufrosoi %s:%d", ip, port);
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
@@ -351,12 +340,12 @@ static int net_restore_send(const char *path, char ip[MAX_IP_LENGTH], int port)
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
 	// Get file size.
-	struct stat *stbuf;
+	struct stat *stbuf = NULL;
 	lstat(path, stbuf);
 
 	// Create request.
 	struct request request;
-	request.syscall = sys_link;
+	request.syscall = sys_restore_receive;
 	request.size = stbuf->st_size;
 	strcpy(request.path, path);
 
@@ -372,6 +361,7 @@ static int net_restore_send(const char *path, char ip[MAX_IP_LENGTH], int port)
 
 static int net_restore_receive(const char *path, size_t size, int sfd)
 {
+	printf("MOVIDA UFROSO, AGADGINEO DA %s\n", path);
 	// Read the data from socket.
 	char buffer[size];
 	read(sfd, buffer, size);
@@ -406,7 +396,7 @@ static void *client_handler(void *cf)
 		case sys_getattr:
 		{
 			struct response response;
-			response.status = net_getattr(fullpath, &response.data, &request.fi);
+			response.status = net_getattr(fullpath, (struct stat *)&response.data, &request.fi);
 			write(cfd, &response, sizeof(struct response));
 			break;
 		}
@@ -462,9 +452,8 @@ static void *client_handler(void *cf)
 		}
 		case sys_open:
 		{
-			struct response response;
-			result = net_open(fullpath, &request.fi, response.actual_hash);
-			write(cfd, &response, sizeof(result));
+			result = net_open(fullpath, &request.fi);
+			write(cfd, &result, sizeof(result));
 			break;
 		}
 		case sys_read:
@@ -501,7 +490,7 @@ static void *client_handler(void *cf)
 			// printf("\n");
 
 			// response.status = 0;
-			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi, &request.digest);
+			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi, (unsigned char *)&request.digest);
 			write(cfd, &response, sizeof(struct rw_response));
 
 			free(buffer);
@@ -544,8 +533,6 @@ static void *client_handler(void *cf)
 			write(cfd, &response, sizeof(struct response));
 			break;
 		}
-		case sys_releasedir:
-			break;
 		case sys_create:
 		{
 			result = net_create(fullpath, request.mode, &request.fi);

@@ -117,11 +117,6 @@ static void parse_config(const char *config_file, vector *storages, struct clien
 	fclose(file);
 }
 
-static void print_fn(void *elem, void *aux)
-{
-	fprintf(stdout, "%s\n", (char *)elem);
-}
-
 static int send_data(struct request request, void *buffer, size_t size, char *ip, int port)
 {
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -136,13 +131,6 @@ static int send_data(struct request request, void *buffer, size_t size, char *ip
 	write(sfd, &request, sizeof(request));
 
 	int status = -errno;
-
-	if (request.syscall == sys_open)
-	{
-		struct response response;
-		read(sfd, &response, sizeof(struct response));
-		status = response.status;
-	}
 	if (buffer != NULL)
 	{
 		struct response response;
@@ -155,6 +143,36 @@ static int send_data(struct request request, void *buffer, size_t size, char *ip
 
 	close(sfd);
 	return status;
+}
+
+static void call_restore(struct request request, int index)
+{
+	struct raid_storage *s = vector_nth(&storages, storage_index);
+
+	char *sender = strdup(vector_nth(&s->servers, index));
+	char *sender_ip = strsep(&sender, ":");
+	int sender_port = atoi(strsep(&sender, ":"));
+
+	char *receiver = strdup(vector_nth(&s->servers, !index));
+	char *receiver_ip = strsep(&receiver, ":");
+	int receiver_port = atoi(strsep(&receiver, ":"));
+
+	// Copy index -> !index
+	struct request send_request;
+	send_request.syscall = sys_restore_send;
+	strcpy(send_request.path, request.path);
+	strcpy(send_request.ip, receiver_ip);
+	request.port = receiver_port;
+
+	// Connect to the sender server.
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(sender_port);
+	addr.sin_addr.s_addr = inet_addr(sender_ip);
+
+	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	write(sfd, &request, sizeof(send_request));
 }
 
 // Thread-ებში გაშვება შეიძლება read/write-ის გარდა დანარჩენის, მანამდე როგორც მქონდა.
@@ -178,7 +196,19 @@ static int raid_controller(struct request request, void *buffer, size_t size)
 	}
 
 	// TODO: აქანა აღადგინე ბიჭიკო.
-	// if (return_values[0] == 0 && )
+	// if (request.syscall == sys_open)
+	// {
+	// 	if (return_values[0] == 0 && return_values[1] == -HASH_MISMATCH)
+	// 	{
+	// 		printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 0), (char *)vector_nth(&s->servers, 1));
+	// 		call_restore(request, 0);
+	// 	}
+	// 	else if (return_values[0] == -HASH_MISMATCH && return_values[1] == 0)
+	// 	{
+	// 		printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 1), (char *)vector_nth(&s->servers, 0));
+	// 		call_restore(request, 1);
+	// 	}
+	// }
 
 	return return_values[0];
 }
@@ -193,18 +223,6 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 	int status = raid_controller(request, (void *)stbuf, sizeof(struct stat));
 
 	return status;
-}
-
-static int net_mknod(const char *path, mode_t mode, dev_t dev)
-{
-	printf("%s\n", "mknod");
-	struct request request;
-	request.syscall = sys_mknod;
-	strcpy(request.path, path);
-	request.mode = mode;
-	request.dev = dev;
-
-	return raid_controller(request, NULL, 0);
 }
 
 static int net_mkdir(const char *path, mode_t mode)
@@ -407,10 +425,6 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 	return status;
 }
 
-static int net_statfs(const char *path, struct statvfs *statv) { return 0; }
-
-static int net_flush(const char *path, struct fuse_file_info *fi) { return 0; }
-
 static int net_release(const char *path, struct fuse_file_info *fi)
 {
 	printf("%s: %s \n", "release", path);
@@ -483,23 +497,8 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return raid_controller(request, NULL, 0);
 }
 
-static int net_access(const char *path, int mask)
-{
-	printf("%s: %s \n", "access", path);
-
-	struct request request;
-	request.syscall = sys_create;
-	strcpy(request.path, path);
-	request.mask = mask;
-
-	return raid_controller(request, NULL, 0);
-}
-
-static int xmp_utimens(const char *path, const struct timespec ts[2], struct fuse_file_info *fi) { return 0; }
-
 struct fuse_operations net_oper = {
 	.getattr = net_getattr,
-	// .mknod = net_mknod,
 	.mkdir = net_mkdir,
 	.unlink = net_unlink,
 	.rmdir = net_rmdir,
@@ -510,8 +509,6 @@ struct fuse_operations net_oper = {
 	.open = net_open,
 	.read = net_read,
 	.write = net_write,
-	.statfs = net_statfs,
-	.flush = net_flush,
 	.release = net_release,
 	.setxattr = net_setxattr,
 	.getxattr = net_getxattr,
@@ -523,15 +520,6 @@ struct fuse_operations net_oper = {
 	.releasedir = net_releasedir,
 	.create = net_create,
 };
-
-static char *concat(const char *s1, const char *s2)
-{
-	char *result = malloc(strlen(s1) + strlen(s2) + 1);
-	strcpy(result, s1);
-	strcat(result, s2);
-
-	return result;
-}
 
 int main(int argc, char *argv[])
 {

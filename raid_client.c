@@ -32,6 +32,7 @@ struct raid_storage
 
 static vector storages;
 static int storage_index;
+static int server_connections[2];
 
 static void parse_config(const char *config_file, vector *storages, struct client_config *config)
 {
@@ -179,13 +180,13 @@ static void call_restore(struct request request, int index)
 	write(sfd, &send_request, sizeof(struct request));
 }
 
-// Thread-ებში გაშვება შეიძლება read/write-ის გარდა დანარჩენის, მანამდე როგორც მქონდა.
 static int raid_controller(struct request request, void *buffer, size_t size)
 {
 	size_t server_count = 2;
 
 	struct raid_storage *s = vector_nth(&storages, storage_index);
-	int return_values[server_count];
+	int results[server_count];
+	int result_index = 0;
 
 	size_t i;
 	for (i = 0; i < server_count; i++)
@@ -194,28 +195,116 @@ static int raid_controller(struct request request, void *buffer, size_t size)
 
 		char *ip = strsep(&server, ":");
 		int port = atoi(strsep(&server, ":"));
-		return_values[i] = send_data(request, buffer, size, ip, port);
+
+		if (request.syscall == sys_getattr)
+		{
+			results[i] = send_data(request, buffer, size, ip, port);
+			if (results[i] == 0)
+				return 0;
+		}
+		else if (request.syscall == sys_readdir)
+		{
+			char *first_server = strdup(vector_nth(&s->servers, 0));
+			char *second_server = strdup(vector_nth(&s->servers, 1));
+
+			char *first_ip = strsep(&first_server, ":");
+			int first_port = atoi(strsep(&first_server, ":"));
+			char *second_ip = strsep(&second_server, ":");
+			int second_port = atoi(strsep(&second_server, ":"));
+
+			char first_buffer[DATA_SIZE];
+			char second_buffer[DATA_SIZE];
+
+			results[0] = send_data(request, first_buffer, size, first_ip, first_port);
+			results[1] = send_data(request, second_buffer, size, second_ip, second_port);
+
+			printf("Comparing: \n%s \nwith \n%s\n", first_buffer, second_buffer);
+
+			if (strlen(first_buffer) > strlen(second_buffer))
+			{
+				strcpy(buffer, first_buffer);
+				result_index = 0;
+			}
+			else
+			{
+				strcpy(buffer, second_buffer);
+				result_index = 1;
+			}
+
+			break;
+		}
+		else
+			results[i] = send_data(request, buffer, size, ip, port);
 
 		free(server);
 	}
 
-	// TODO: წაშლილზე არ მუშაობს.
 	if (request.syscall == sys_open)
 	{
-		if (return_values[0] == 0 && return_values[1] == -HASH_MISMATCH)
+		if (results[0] == 0 && results[1] != 0)
 		{
-			printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 0), (char *)vector_nth(&s->servers, 1));
 			call_restore(request, 0);
+			return results[0];
 		}
-		else if (return_values[0] == -HASH_MISMATCH && return_values[1] == 0)
+		else if (results[0] != 0 && results[1] == 0)
 		{
-			printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 1), (char *)vector_nth(&s->servers, 0));
 			call_restore(request, 1);
+			return results[1];
 		}
 	}
 
-	return return_values[0];
+	return results[result_index];
 }
+
+// static int raid_controller2(struct request request, void *buffer, size_t size)
+// {
+// 	size_t server_count = 2;
+
+// 	struct raid_storage *s = vector_nth(&storages, storage_index);
+// 	int return_values[server_count];
+// 	int return_index = 0;
+
+// 	size_t i;
+// 	for (i = 0; i < server_count; i++)
+// 	{
+// 		char *server = strdup(vector_nth(&s->servers, i));
+
+// 		char *ip = strsep(&server, ":");
+// 		int port = atoi(strsep(&server, ":"));
+// 		return_values[i] = send_data(request, buffer, size, ip, port);
+
+// 		// if (request.syscall != sys_open && return_values[0] == 0)
+// 		// 	break;
+
+// 		if (request.syscall == sys_getattr && return_values[i] == 0)
+// 		{
+// 			return_index = 1;
+// 			break;
+// 		}
+
+// 		// return_index = i;
+// 		free(server);
+// 	}
+
+// 	// TODO: წაშლილზე არ მუშაობს. (readdir)
+// 	if (request.syscall == sys_open)
+// 	{
+// 		if (return_values[0] == 0 && return_values[1] != 0)
+// 		{
+// 			printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 0), (char *)vector_nth(&s->servers, 1));
+// 			call_restore(request, 0);
+// 			return_index = 0;
+// 		}
+// 		else if (return_values[0] != 0 && return_values[1] == 0)
+// 		{
+// 			printf("Restoring %s from %s to %s\n", (char *)request.path, (char *)vector_nth(&s->servers, 1), (char *)vector_nth(&s->servers, 0));
+// 			call_restore(request, 1);
+// 			return_index = 1;
+// 		}
+// 	}
+
+// 	return return_values[return_index];
+// }
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
@@ -390,6 +479,7 @@ static int rw_raid_controller(struct request request, char *read_buffer, const c
 		free(server);
 	}
 
+	// printf("SOSOOOOOOOOOO: %d %d\n", return_values[0], return_values[1]);
 	return return_values[0];
 }
 

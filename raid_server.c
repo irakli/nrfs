@@ -127,7 +127,6 @@ static int net_link(const char *path, const char *new_path)
 
 static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-	(void)fi;
 	int fd = open(path, fi->flags);
 	int result = chmod(path, mode);
 
@@ -156,6 +155,9 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	printf("OPEN\n");
 	int fd = open(path, fi->flags);
 
+	if (fd < 0)
+		return -errno;
+
 	char actual_hash[MD5_DIGEST_LENGTH * 2];
 	get_hash(path, actual_hash);
 	char saved_hash[MD5_DIGEST_LENGTH * 2];
@@ -166,9 +168,6 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 		printf("Hash mismatch: %s - %s\n", actual_hash, saved_hash);
 		return -HASH_MISMATCH;
 	}
-
-	if (fd < 0)
-		return -errno;
 
 	close(fd);
 	return 0;
@@ -296,19 +295,29 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 {
 	DIR *dp = opendir(path);
 
-	struct dirent *de;
+	char local_buffer[DATA_SIZE];
+	struct dirent *de = readdir(dp);
+	if (de == 0)
+		return -errno;
+
 	int off = 0;
 	char delimiter[2] = "|";
-	while ((de = readdir(dp)) != NULL)
+	do
 	{
-		memcpy((char *)buffer + off, de->d_name, strlen(de->d_name));
+		memcpy((char *)local_buffer + off, de->d_name, strlen(de->d_name));
 		off += strlen(de->d_name);
-		memcpy((char *)buffer + off, &delimiter, 1);
+		memcpy((char *)local_buffer + off, &delimiter, 1);
 		off++;
-	}
+	} while ((de = readdir(dp)) != NULL);
 
 	char strterm[2] = "\0";
-	memcpy((char *)buffer + off - 1, &strterm, sizeof(char));
+	memcpy((char *)local_buffer + off - 1, &strterm, sizeof(char));
+
+	if (strlen(local_buffer) > strlen(buffer))
+	{
+		// printf("Replacing: \n%s \nwith \n%s\n", buffer, local_buffer);
+		strcpy(buffer, local_buffer);
+	}
 
 	closedir(dp);
 	return 0;
@@ -327,9 +336,9 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 }
 
 /* Send the file located at the given path to the given server. */
-static int net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
+static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
-	printf("vugzavnit ufrosoi %s:%d", ip, port);
+	printf("vugzavnit ufrosoi %s:%d\n", ip, port);
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
@@ -347,6 +356,7 @@ static int net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_
 	struct request request;
 	request.syscall = sys_restore_receive;
 	request.size = stbuf.st_size;
+	request.mode = stbuf.st_mode;
 	strcpy(request.path, path);
 
 	// Send the request.
@@ -355,11 +365,9 @@ static int net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_
 	// Send the file.
 	int fd = open(fpath, O_RDWR);
 	sendfile(sfd, fd, 0, stbuf.st_size);
-
-	return 0;
 }
 
-static int net_restore_receive(const char *path, size_t size, int cfd)
+static void net_restore_receive(const char *path, size_t size, mode_t mode, int cfd)
 {
 	// Read the data from socket.
 	char buffer[size];
@@ -367,21 +375,24 @@ static int net_restore_receive(const char *path, size_t size, int cfd)
 
 	printf("ebeeeee\n");
 
-	// FILE *file = fopen(path, "ab+");
-
-	// fwrite(buffer, size, 1, file);
-
-	// fclose(file);
-
 	int fd = open(path, O_RDWR);
 	if (fd == -1)
 	{
-		fd = open(path, O_CREAT);
+		fd = open(path, O_CREAT | O_RDWR);
 	}
 	write(fd, buffer, size);
 
+	char hash[MD5_DIGEST_LENGTH * 2];
+	get_hash(path, hash);
+
+	char name[] = HASH_XATTR;
+	net_setxattr(path, name, hash, strlen(hash), 0);
+
+	struct fuse_file_info fi;
+	fi.flags = O_RDWR;
+	net_chmod(path, mode, &fi);
+
 	close(fd);
-	return 0;
 }
 
 static void *client_handler(void *cf)
@@ -552,14 +563,12 @@ static void *client_handler(void *cf)
 		}
 		case sys_restore_send:
 		{
-			result = net_restore_send(request.path, fullpath, request.ip, request.port);
-			write(cfd, &result, sizeof(result));
+			net_restore_send(request.path, fullpath, request.ip, request.port);
 			break;
 		}
 		case sys_restore_receive:
 		{
-			result = net_restore_receive(fullpath, request.size, cfd);
-			write(cfd, &result, sizeof(result));
+			net_restore_receive(fullpath, request.size, request.mode, cfd);
 			break;
 		}
 		default:
@@ -611,7 +620,7 @@ int main(int argc, char *argv[])
 	{
 		socklen_t size = sizeof(struct sockaddr_in);
 		cfd = accept(sfd, (struct sockaddr *)&peer_addr, &size);
-		// printf("Accepted incoming connection...\n");
+		printf("Accepted incoming connection...\n");
 
 		pthread_t p;
 		pthread_create(&p, NULL, &client_handler, &cfd);

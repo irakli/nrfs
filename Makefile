@@ -7,10 +7,10 @@ client: raid_client.o vector.o
 	gcc raid_client.o vector.o `pkg-config fuse --cflags --libs` -o client.out -lcrypto
 
 raid_server.o: raid_server.c raid.h
-	gcc -Wall `pkg-config fuse --cflags --libs` -c raid_server.c
+	gcc `pkg-config fuse --cflags --libs` -c raid_server.c
 
 raid_client.o: raid_client.c raid.h
-	gcc -Wall `pkg-config fuse --cflags --libs` -c raid_client.c
+	gcc `pkg-config fuse --cflags --libs` -c raid_client.c
 
 vector.o: vector.c vector.h
 	gcc -c vector.c

@@ -14,7 +14,7 @@
 #include <dirent.h>
 #include <sys/sendfile.h>
 
-#define BACKLOG 16
+#define BACKLOG 1
 
 struct server_config
 {
@@ -26,7 +26,7 @@ struct server_config
 struct server_config config;
 enum syscalls last_syscall;
 
-static void get_hash(const char *path, char result[MD5_DIGEST_LENGTH * 2])
+static void get_hash(const char *path, char *result)
 {
 	unsigned char digest[MD5_DIGEST_LENGTH];
 	FILE *file = fopen(path, "rb");
@@ -39,11 +39,12 @@ static void get_hash(const char *path, char result[MD5_DIGEST_LENGTH * 2])
 		MD5_Update(&context, data, bytes);
 	MD5_Final(digest, &context);
 
-	char temp[MD5_DIGEST_LENGTH * 2];
+	char temp[MD5_DIGEST_LENGTH * 2 + 1] = "";
 	int i;
 	for (i = 0; i < MD5_DIGEST_LENGTH; i++)
 	{
 		sprintf(temp, "%02x", digest[i]);
+		// printf("%s", temp);
 		strcat(result, temp);
 	}
 }
@@ -158,18 +159,19 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	if (fd < 0)
 		return -errno;
 
-	char actual_hash[MD5_DIGEST_LENGTH * 2];
+	char actual_hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
 	get_hash(path, actual_hash);
-	char saved_hash[MD5_DIGEST_LENGTH * 2];
-	getxattr(path, HASH_XATTR, saved_hash, MD5_DIGEST_LENGTH * 2);
+	char saved_hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
+	getxattr(path, HASH_XATTR, saved_hash, MD5_DIGEST_LENGTH * 2 + 1);
 
-	if (strncmp(actual_hash, saved_hash, MD5_DIGEST_LENGTH * 2) != 0)
+	if (strncmp(actual_hash, saved_hash, strlen(actual_hash)) != 0)
 	{
-		printf("Hash mismatch: %s - %s\n", actual_hash, saved_hash);
+		// printf("Hash mismatch: %s - %s\n", actual_hash, saved_hash);
 		return -HASH_MISMATCH;
 	}
 
 	close(fd);
+	// free(actual_hash);
 	return 0;
 }
 
@@ -182,7 +184,7 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 	if (result < 0)
 		return -errno;
 
-	printf("path: %s, size: %zu read: %d\n", path, size, result);
+	// printf("path: %s, size: %zu read: %d\n", path, size, result);
 	close(fd);
 	return result;
 }
@@ -191,7 +193,7 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 {
 	int result;
 
-	printf("path: %s, size: %zu\n", path, size);
+	// printf("path: %s, size: %zu\n", path, size);
 	int fd = open(path, fi->flags);
 	result = pwrite(fd, buffer, size, offset);
 
@@ -233,21 +235,22 @@ static int net_getxattr(char *path, char *name, char *value, size_t size)
 	return result;
 }
 
-// TODO: Can be optimized by calling MD5_Update on write and MD5_Final here.
 static int net_release(const char *path, struct fuse_file_info *fi)
 {
 	/* If the last syscall before this one was write, that means that
 	   the client has finished writing a file and we can calculate its hash. */
 	if (last_syscall == sys_write)
 	{
-		char hash[MD5_DIGEST_LENGTH * 2];
+		char hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
 		get_hash(path, hash);
 
 		char name[] = HASH_XATTR;
 		net_setxattr(path, name, hash, strlen(hash), 0);
 
-		printf("%s", hash);
-		printf(" %s\n", path);
+		// printf("%s", hash);
+		// printf(" %s\n", path);
+
+		// free(hash);
 	}
 
 	return 0;
@@ -295,7 +298,6 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 {
 	DIR *dp = opendir(path);
 
-	char local_buffer[DATA_SIZE];
 	struct dirent *de = readdir(dp);
 	if (de == 0)
 		return -errno;
@@ -304,20 +306,14 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 	char delimiter[2] = "|";
 	do
 	{
-		memcpy((char *)local_buffer + off, de->d_name, strlen(de->d_name));
+		memcpy((char *)buffer + off, de->d_name, strlen(de->d_name));
 		off += strlen(de->d_name);
-		memcpy((char *)local_buffer + off, &delimiter, 1);
+		memcpy((char *)buffer + off, &delimiter, 1);
 		off++;
 	} while ((de = readdir(dp)) != NULL);
 
 	char strterm[2] = "\0";
-	memcpy((char *)local_buffer + off - 1, &strterm, sizeof(char));
-
-	if (strlen(local_buffer) > strlen(buffer))
-	{
-		// printf("Replacing: \n%s \nwith \n%s\n", buffer, local_buffer);
-		strcpy(buffer, local_buffer);
-	}
+	memcpy((char *)buffer + off - 1, &strterm, sizeof(char));
 
 	closedir(dp);
 	return 0;
@@ -325,6 +321,7 @@ static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, o
 
 static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
+	printf("Create: %s\n", path);
 	int result;
 
 	result = open(path, fi->flags, mode);
@@ -338,7 +335,6 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 /* Send the file located at the given path to the given server. */
 static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
-	printf("vugzavnit ufrosoi %s:%d\n", ip, port);
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
@@ -359,30 +355,51 @@ static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP
 	request.mode = stbuf.st_mode;
 	strcpy(request.path, path);
 
+	printf("Sending %s (%zu) to %s:%d ", path, request.size, ip, port);
 	// Send the request.
 	write(sfd, &request, sizeof(request));
 
 	// Send the file.
 	int fd = open(fpath, O_RDWR);
-	sendfile(sfd, fd, 0, stbuf.st_size);
+	// sendfile(sfd, fd, 0, stbuf.st_size);
+	off_t offset = 0;
+	int sent, remaining = stbuf.st_size;
+	while (((sent = sendfile(sfd, fd, &offset, BUFSIZ)) > 0) && (remaining > 0))
+	{
+		fprintf(stdout, "1. Server sent %d bytes from file's data, offset is now : %zu and remaining data = %d\n", sent, offset, remaining);
+		remaining -= sent;
+		fprintf(stdout, "2. Server sent %d bytes from file's data, offset is now : %zu and remaining data = %d\n", sent, offset, remaining);
+	}
+
+	close(fd);
+	close(sfd);
 }
 
 static void net_restore_receive(const char *path, size_t size, mode_t mode, int cfd)
 {
-	// Read the data from socket.
-	char buffer[size];
-	read(cfd, buffer, size);
+	printf("Waiting for file with size: %zu\n", size);
 
-	printf("ebeeeee\n");
+	// // Read the data from socket.
+	// char *buffer = malloc(size);
+	// read(cfd, buffer, size);
 
 	int fd = open(path, O_RDWR);
 	if (fd == -1)
-	{
 		fd = open(path, O_CREAT | O_RDWR);
-	}
-	write(fd, buffer, size);
 
-	char hash[MD5_DIGEST_LENGTH * 2];
+	char buffer[BUFSIZ];
+	int length, remaining = size;
+
+	while (((length = recv(cfd, buffer, BUFSIZ, 0)) > 0) && (remaining > 0))
+	{
+		write(fd, buffer, length);
+		remaining -= length;
+		fprintf(stdout, "Receive %d bytes and we hope :- %d bytes\n", length, remaining);
+	}
+
+	// printf("ebeeeee:\n%s", buffer);
+
+	char hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
 	get_hash(path, hash);
 
 	char name[] = HASH_XATTR;
@@ -393,6 +410,16 @@ static void net_restore_receive(const char *path, size_t size, mode_t mode, int 
 	net_chmod(path, mode, &fi);
 
 	close(fd);
+	// free(buffer);
+}
+
+static char *concat(const char *s1, const char *s2)
+{
+	char *result = malloc(strlen(s1) + strlen(s2) + 1);
+	strncpy(result, s1, strlen(s1) - 1);
+	strcat(result, s2);
+
+	return result;
 }
 
 static void *client_handler(void *cf)
@@ -406,12 +433,10 @@ static void *client_handler(void *cf)
 		if (data_size <= 0)
 			break;
 
-		printf("Called syscall: %d\n", request.syscall);
 		int result = 0;
+		char *fullpath = concat(config.mount_point, request.path);
 
-		char fullpath[strlen(request.path) + strlen(config.mount_point) + 1];
-		strncpy(fullpath, config.mount_point, strlen(config.mount_point) - 1);
-		strcat(fullpath, request.path);
+		printf("Called syscall: %d %s\n", request.syscall, fullpath);
 
 		switch (request.syscall)
 		{
@@ -564,11 +589,13 @@ static void *client_handler(void *cf)
 		case sys_restore_send:
 		{
 			net_restore_send(request.path, fullpath, request.ip, request.port);
+			printf("Finishing\n");
 			break;
 		}
 		case sys_restore_receive:
 		{
 			net_restore_receive(fullpath, request.size, request.mode, cfd);
+			printf("Finishing\n");
 			break;
 		}
 		default:
@@ -578,6 +605,7 @@ static void *client_handler(void *cf)
 		}
 
 		last_syscall = request.syscall;
+		free(fullpath);
 	}
 
 	close(cfd);
@@ -622,8 +650,9 @@ int main(int argc, char *argv[])
 		cfd = accept(sfd, (struct sockaddr *)&peer_addr, &size);
 		printf("Accepted incoming connection...\n");
 
-		pthread_t p;
-		pthread_create(&p, NULL, &client_handler, &cfd);
+		pthread_t thread;
+		pthread_create(&thread, NULL, &client_handler, &cfd);
+		// client_handler(&cfd);
 	}
 	close(sfd);
 

@@ -6,8 +6,10 @@
 #define MAX_PATH_LENGTH 256
 #define MAX_IP_LENGTH 24 // 255.255.255.255:65535 (22)
 #define DATA_SIZE 4096
-#define HASH_MISMATCH 1337
-#define HASH_XATTR "user.hash"
+
+#define hash_mismatch 1337
+#define hash_xattr "user.hash"
+#define no_connection 420
 
 enum syscalls
 {
@@ -36,10 +38,12 @@ enum syscalls
 	sys_create,
 	sys_init,
 	sys_restore_send,
-	sys_restore_receive
+	sys_restore_receive,
+	sys_swap_send,
+	sys_swap_receive
 };
 
-struct __attribute__((__packed__)) request
+struct __attribute__((__packed__)) request_t
 {
 	enum syscalls syscall;
 	char path[MAX_PATH_LENGTH];
@@ -57,7 +61,7 @@ struct __attribute__((__packed__)) request
 	int port;
 };
 
-struct __attribute__((__packed__)) response
+struct __attribute__((__packed__)) response_t
 {
 	int status;
 	char data[DATA_SIZE];
@@ -65,7 +69,7 @@ struct __attribute__((__packed__)) response
 	char actual_hash[MD5_DIGEST_LENGTH * 2];
 };
 
-struct __attribute__((__packed__)) rw_response
+struct __attribute__((__packed__)) rw_response_t
 {
 	int status;
 	size_t size;

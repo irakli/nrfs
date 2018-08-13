@@ -16,14 +16,14 @@
 
 #define BACKLOG 1
 
-struct server_config
+struct server_config_t
 {
 	char mount_point[MAX_PATH_LENGTH];
 	char ip[MAX_IP_LENGTH];
 	int port;
 };
 
-struct server_config config;
+struct server_config_t config;
 enum syscalls last_syscall;
 
 static void get_hash(const char *path, char *result)
@@ -162,12 +162,12 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	char actual_hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
 	get_hash(path, actual_hash);
 	char saved_hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
-	getxattr(path, HASH_XATTR, saved_hash, MD5_DIGEST_LENGTH * 2 + 1);
+	getxattr(path, hash_xattr, saved_hash, MD5_DIGEST_LENGTH * 2 + 1);
 
 	if (strncmp(actual_hash, saved_hash, strlen(actual_hash)) != 0)
 	{
 		// printf("Hash mismatch: %s - %s\n", actual_hash, saved_hash);
-		return -HASH_MISMATCH;
+		return -hash_mismatch;
 	}
 
 	close(fd);
@@ -244,7 +244,7 @@ static int net_release(const char *path, struct fuse_file_info *fi)
 		char hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
 		get_hash(path, hash);
 
-		char name[] = HASH_XATTR;
+		char name[] = hash_xattr;
 		net_setxattr(path, name, hash, strlen(hash), 0);
 
 		// printf("%s", hash);
@@ -332,6 +332,67 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return 0;
 }
 
+static void net_swap_receive(const char *path, const char *fpath, size_t size, int cfd)
+{
+	// Receive the file.
+	int fd = open(path, O_CREAT | O_RDWR);
+
+	char buffer[BUFSIZ];
+	int length, remaining = size;
+
+	while (((length = recv(cfd, buffer, BUFSIZ, 0)) > 0) && (remaining > 0))
+	{
+		write(fd, buffer, length);
+		remaining -= length;
+		fprintf(stdout, "Receive %d bytes and we hope : %d bytes\n", length, remaining);
+	}
+
+	// Extract contents.
+	if (fork() == 0)
+	{
+		execl("/bin/tar", "tar", "--strip-components", "1", "-xzf", path, "-C", fpath, NULL);
+		exit(0);
+	}
+}
+
+static void net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
+{
+	printf("Hello from the other side.\n");
+
+	// Create tar.
+	if (fork() == 0)
+	{
+		execl("/bin/tar", "tar", "-czf", path, fpath, NULL);
+		exit(0);
+	}
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(ip);
+
+	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+
+	// Get file size.
+	struct stat stbuf;
+	stat(fpath, &stbuf);
+
+	// Create request.
+	struct request_t request;
+	request.syscall = sys_swap_receive;
+	request.size = stbuf.st_size;
+	strcpy(request.path, path);
+
+	int fd = open(path, O_RDONLY);
+	off_t offset = 0;
+	int sent, remaining = stbuf.st_size;
+	while (((sent = sendfile(sfd, fd, &offset, BUFSIZ)) > 0) && (remaining > 0))
+		remaining -= sent;
+
+	unlink(path);
+}
+
 /* Send the file located at the given path to the given server. */
 static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
@@ -349,7 +410,7 @@ static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP
 	stat(fpath, &stbuf);
 
 	// Create request.
-	struct request request;
+	struct request_t request;
 	request.syscall = sys_restore_receive;
 	request.size = stbuf.st_size;
 	request.mode = stbuf.st_mode;
@@ -402,7 +463,7 @@ static void net_restore_receive(const char *path, size_t size, mode_t mode, int 
 	char hash[MD5_DIGEST_LENGTH * 2 + 1] = "\0";
 	get_hash(path, hash);
 
-	char name[] = HASH_XATTR;
+	char name[] = hash_xattr;
 	net_setxattr(path, name, hash, strlen(hash), 0);
 
 	struct fuse_file_info fi;
@@ -428,8 +489,8 @@ static void *client_handler(void *cf)
 
 	while (1)
 	{
-		struct request request;
-		size_t data_size = read(cfd, &request, sizeof(struct request));
+		struct request_t request;
+		size_t data_size = read(cfd, &request, sizeof(struct request_t));
 		if (data_size <= 0)
 			break;
 
@@ -442,9 +503,9 @@ static void *client_handler(void *cf)
 		{
 		case sys_getattr:
 		{
-			struct response response;
+			struct response_t response;
 			response.status = net_getattr(fullpath, (struct stat *)&response.data, &request.fi);
-			write(cfd, &response, sizeof(struct response));
+			write(cfd, &response, sizeof(struct response_t));
 			break;
 		}
 		case sys_mkdir:
@@ -505,22 +566,22 @@ static void *client_handler(void *cf)
 		}
 		case sys_read:
 		{
-			struct rw_response response;
+			struct rw_response_t response;
 			response.size = request.size;
 
 			char *buffer = malloc(response.size);
 			response.status = net_read(fullpath, buffer, request.size, request.offset, &request.fi);
-			write(cfd, &response, sizeof(struct rw_response));
+			write(cfd, &response, sizeof(struct rw_response_t));
 			write(cfd, buffer, response.size);
 
-			// printf("Should read: %d + %d = %d\n", sizeof(struct rw_response), response.size, sizeof(struct rw_response) + response.size);
+			// printf("Should read: %d + %d = %d\n", sizeof(struct rw_response_t), response.size, sizeof(struct rw_response_t) + response.size);
 
 			free(buffer);
 			break;
 		}
 		case sys_write:
 		{
-			struct rw_response response;
+			struct rw_response_t response;
 
 			char *buffer = malloc(request.size);
 			read(cfd, buffer, request.size);
@@ -538,7 +599,7 @@ static void *client_handler(void *cf)
 
 			// response.status = 0;
 			response.status = net_write(fullpath, buffer, request.size, request.offset, &request.fi, (unsigned char *)&request.digest);
-			write(cfd, &response, sizeof(struct rw_response));
+			write(cfd, &response, sizeof(struct rw_response_t));
 
 			free(buffer);
 			break;
@@ -575,9 +636,9 @@ static void *client_handler(void *cf)
 		}
 		case sys_readdir:
 		{
-			struct response response;
+			struct response_t response;
 			response.status = net_readdir(fullpath, &response.data, NULL, request.offset, &request.fi);
-			write(cfd, &response, sizeof(struct response));
+			write(cfd, &response, sizeof(struct response_t));
 			break;
 		}
 		case sys_create:
@@ -596,6 +657,16 @@ static void *client_handler(void *cf)
 		{
 			net_restore_receive(fullpath, request.size, request.mode, cfd);
 			printf("Finishing\n");
+			break;
+		}
+		case sys_swap_send:
+		{
+			net_swap_send("swap", config.mount_point, config.ip, config.port);
+			break;
+		}
+		case sys_swap_receive:
+		{
+			net_swap_receive("swap", config.mount_point, request.size, cfd);
 			break;
 		}
 		default:

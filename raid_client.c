@@ -328,75 +328,69 @@ struct thread_rw_data
 	int server;
 };
 
-static int read_write(void *arg)
+static int read_write(struct request request, char *read_buffer, const char *write_buffer, char *ip, int port)
 {
-	struct thread_rw_data data = *(struct thread_rw_data *)arg;
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(port);
+	addr.sin_addr.s_addr = inet_addr(ip);
+
+	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
 	int status = -errno;
-	if (data.read_buffer != NULL)
+	if (read_buffer != NULL)
 	{
-		write(server_connections[data.server], &data.request, sizeof(data.request));
+		write(sfd, &request, sizeof(request));
 		struct rw_response response;
-		read(server_connections[data.server], &response, sizeof(struct rw_response));
+		read(sfd, &response, sizeof(struct rw_response));
 		status = response.status;
 		size_t size = response.size;
-		read(server_connections[data.server], data.read_buffer, size);
+		read(sfd, read_buffer, size);
 		// printf("Reads: %d + %d = %d\n", sizeof(struct rw_response), size, sizeof(struct rw_response) + size);
 	}
-	else if (data.write_buffer != NULL)
+	else if (write_buffer != NULL)
 	{
 		MD5_CTX context;
 		MD5_Init(&context);
-		MD5_Update(&context, data.write_buffer, data.request.size);
-		MD5_Final(data.request.digest, &context);
+		MD5_Update(&context, write_buffer, request.size);
+		MD5_Final(request.digest, &context);
 
 		int i = 0;
 		for (i = 0; i < MD5_DIGEST_LENGTH; i++)
-			printf("%02x", data.request.digest[i]);
+			printf("%02x", request.digest[i]);
 		printf("\n");
 
-		// printf("Hash: %s\n", request.digest);
-		write(server_connections[data.server], &data.request, sizeof(data.request));
-
-		// printf("%s\n", write_buffer);
-		// printf("len: %d\n", strlen((char *)write_buffer));
-		// printf("size: %d\n", request.size);
-		write(server_connections[data.server], data.write_buffer, data.request.size);
+		write(sfd, &request, sizeof(request));
+		write(sfd, write_buffer, request.size);
 		struct rw_response response;
-		read(server_connections[data.server], &response, sizeof(struct rw_response));
+		read(sfd, &response, sizeof(struct rw_response));
 		status = response.status;
 	}
 
+	close(sfd);
 	return status;
 }
 
-static int rw_raid_controller(struct request request, char *read_buffer, char *write_buffer)
+static int rw_raid_controller(struct request request, char *read_buffer, const char *write_buffer)
 {
 	size_t server_count = 2;
 
-	// TODO: Don't read from both of them.
-	// HACK: Don't do this man, ffs.
-	if (request.syscall == sys_read)
-		server_count = 1;
-
-	pthread_t threads[server_count];
-	struct thread_rw_data data[server_count];
+	struct raid_storage *s = vector_nth(&storages, storage_index);
 	int return_values[server_count];
 
 	size_t i;
 	for (i = 0; i < server_count; i++)
 	{
-		data[i].request = request;
-		data[i].read_buffer = read_buffer;
-		data[i].write_buffer = write_buffer;
-		data[i].server = i;
+		char *server = strdup(vector_nth(&s->servers, i));
 
-		pthread_create(&threads[i], NULL, &read_write, &data[i]);
-		// return_values[i] = read_write(request, read_buffer, write_buffer, i);
+		char *ip = strsep(&server, ":");
+		int port = atoi(strsep(&server, ":"));
+		return_values[i] = read_write(request, read_buffer, write_buffer, ip, port);
+
+		free(server);
 	}
-
-	for (i = 0; i < server_count; i++)
-		pthread_join(threads[i], (void **)&return_values[i]);
 
 	// printf("SOSOOOOOOOOOO: %d %d\n", return_values[0], return_values[1]);
 	return return_values[0];

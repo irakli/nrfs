@@ -40,6 +40,7 @@ static vector storages;
 static int storage_index;
 static int server_connections[2];
 static struct server_t servers[3];
+static int main_server;
 
 static void parse_config(const char *config_file, vector *storages, struct client_config_t *config)
 {
@@ -127,8 +128,14 @@ static void parse_config(const char *config_file, vector *storages, struct clien
 
 static int send_data(struct request_t request, void *buffer, size_t size, int server)
 {
-	printf("Connecting to: server%d\n", server);
-	size_t s = write(server_connections[server], &request, sizeof(request));
+	// printf("Connecting to: server%d\n", server);
+	int s = write(server_connections[server], &request, sizeof(request));
+	if (s <= 0)
+	{
+		// printf("%d\n", s);
+		// printf("No connection to the server: %d\n", server);
+		return -no_connection;
+	}
 
 	int status = -errno;
 	if (buffer != NULL)
@@ -208,19 +215,22 @@ static int raid_controller(struct request_t request, void *buffer, size_t size)
 
 	if (request.syscall == sys_open)
 	{
-		if (results[0] == 0 && results[1] != 0)
+		if (results[0] == 0 && results[1] != 0 && results[1] != -no_connection)
 		{
 			call_restore(request, 0);
 			return results[0];
 		}
-		else if (results[0] != 0 && results[1] == 0)
+		else if (results[1] == 0 && results[0] != 0 && results[0] != -no_connection)
 		{
 			call_restore(request, 1);
 			return results[1];
 		}
 	}
 
-	return results[result_index];
+	if (results[0] == -no_connection)
+		return results[1];
+
+	return results[0];
 }
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
@@ -327,6 +337,10 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	return raid_controller(request, NULL, 0);
 }
 
+static int swap_server()
+{
+}
+
 struct thread_rw_data
 {
 	struct request_t request;
@@ -388,33 +402,52 @@ static int read_write(void *arg)
 static int rw_raid_controller(struct request_t request, char *read_buffer, char *write_buffer)
 {
 	size_t server_count = 2;
-
-	// TODO: Don't read from both of them.
-	// HACK: Don't do this man, ffs.
-	if (request.syscall == sys_read)
-		server_count = 1;
-
 	pthread_t threads[server_count];
 	struct thread_rw_data data[server_count];
-	int return_values[server_count];
+	int results[server_count];
 
 	size_t i;
-	for (i = 0; i < server_count; i++)
+	if (request.syscall == sys_read)
 	{
-		data[i].request = request;
-		data[i].read_buffer = read_buffer;
-		data[i].write_buffer = write_buffer;
-		data[i].ip = servers[i].ip;
-		data[i].port = servers[i].port;
+		for (i = 0; i < server_count; i++)
+		{
+			printf("Reading from: server %d\n", main_server);
+			data[i].request = request;
+			data[i].read_buffer = read_buffer;
+			data[i].write_buffer = write_buffer;
+			data[i].ip = servers[i].ip;
+			data[i].port = servers[i].port;
 
-		pthread_create(&threads[i], NULL, &read_write, &data[i]);
+			results[i] = read_write(&data[i]);
+
+			if (results[i] != -no_connection)
+				break;
+			else
+				main_server == !main_server;
+		}
+	}
+	else
+	{
+		for (i = 0; i < server_count; i++)
+		{
+			data[i].request = request;
+			data[i].read_buffer = read_buffer;
+			data[i].write_buffer = write_buffer;
+			data[i].ip = servers[i].ip;
+			data[i].port = servers[i].port;
+
+			pthread_create(&threads[i], NULL, &read_write, &data[i]);
+		}
+
+		for (i = 0; i < server_count; i++)
+			pthread_join(threads[i], (void **)&results[i]);
 	}
 
-	for (i = 0; i < server_count; i++)
-		pthread_join(threads[i], (void **)&return_values[i]);
-
 	// printf("SOSOOOOOOOOOO: %d %d\n", return_values[0], return_values[1]);
-	return return_values[0];
+	if (results[0] == -no_connection)
+		return results[1];
+
+	return results[0];
 }
 
 static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
@@ -612,6 +645,7 @@ int main(int argc, char *argv[])
 		connect(server_connections[i], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	}
 
+	main_server = 0;
 	// struct request_t r;
 	// raid_controller(r, NULL, 0);
 

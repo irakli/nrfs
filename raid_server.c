@@ -396,6 +396,9 @@ static void net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LE
 /* Send the file located at the given path to the given server. */
 static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
+	if (fork() != 0)
+		return;
+
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
@@ -434,6 +437,7 @@ static void net_restore_send(const char *path, const char *fpath, char ip[MAX_IP
 
 	close(fd);
 	close(sfd);
+	exit(0);
 }
 
 static void net_restore_receive(const char *path, size_t size, mode_t mode, int cfd)

@@ -359,6 +359,12 @@ static void net_swap_receive(const char *path, const char *fpath, size_t size, i
 		execl("/bin/tar", "tar", "--strip-components", "1", "--xattrs", "--xattrs-include=*", "-xzf", path, "-C", fpath, NULL);
 		exit(0);
 	}
+	else
+	{
+		int process_status;
+		wait(&process_status);
+		unlink(path);
+	}
 }
 
 static int net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)

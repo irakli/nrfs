@@ -12,6 +12,8 @@
 #include <arpa/inet.h>
 #include <pthread.h>
 #include <time.h>
+#include <sys/stat.h>
+#include <fcntl.h>
 #include "vector.h"
 
 struct client_config_t
@@ -42,9 +44,12 @@ struct client_config_t config;
 static int storage_index;
 static int server_connections[2];
 static struct server_t servers[3];
+static struct raid_storage_t *storage;
 static int main_server;
 static pthread_mutex_t mutex;
+static pthread_t swap_thread;
 static int swapped;
+static int log_file;
 
 static void parse_config(const char *config_file, vector *storages)
 {
@@ -59,7 +64,7 @@ static void parse_config(const char *config_file, vector *storages)
 	/* Error log. */
 	fgets(line, sizeof(line), file);
 	line[strlen(line) - 1] = '\0';
-	strncpy(config.error_log, line + strlen("errorlog = "), strlen(line) - strlen("errorlog = ") + 1);
+	strncpy(config.error_log, line + strlen("errorlog = "), strlen(line) - strlen("errorlog = ") - 1);
 
 	/* Cache size. */
 	fgets(line, sizeof(line), file);
@@ -89,7 +94,7 @@ static void parse_config(const char *config_file, vector *storages)
 			struct raid_storage_t *storage = malloc(sizeof(struct raid_storage_t));
 			vector_new(&storage->servers, MAX_IP_LENGTH, NULL, 2);
 
-			strncpy(storage->disk_name, line + strlen("diskname = "), strlen(line) - strlen("diskname = "));
+			strncpy(storage->disk_name, line + strlen("diskname = "), strlen(line) - strlen("diskname = ") - 1);
 			vector_append(storages, storage);
 		}
 
@@ -130,27 +135,38 @@ static void parse_config(const char *config_file, vector *storages)
 	fclose(file);
 }
 
+static char *get_time()
+{
+
+	time_t current_time;
+	char *date_time;
+
+	/* Obtain current time. */
+	current_time = time(NULL);
+
+	/* Convert to local time format. */
+	date_time = ctime(&current_time);
+
+	/* Print to stdout. ctime() has already added a terminating newline character. */
+	date_time[strlen(date_time) - 1] = '\0';
+
+	return date_time;
+}
+
 int reconnecting = 0;
 static int swap_server(int index)
 {
-	pthread_mutex_lock(&mutex);
 	swapped = 1;
 
 	struct server_t temp = servers[index];
 	servers[index] = servers[2];
 	servers[2] = temp;
 
-	int i;
-	for (i = 0; i < 2; i++)
-		printf("%d - %s:%d\n", i, servers[i].ip, servers[i].port);
-
 	server_connections[index] = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
 	addr.sin_port = htons(servers[index].port);
 	addr.sin_addr.s_addr = inet_addr(servers[index].ip);
-
-	printf("Connecting to: %s:%d\n", servers[index].ip, servers[index].port);
 	connect(server_connections[index], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
 	struct request_t request;
@@ -159,12 +175,11 @@ static int swap_server(int index)
 	request.port = servers[index].port;
 
 	write(server_connections[!index], &request, sizeof(struct request_t));
+
 	int result;
-
 	read(server_connections[!index], &result, sizeof(result));
-	printf("AEEEEEE: %d\n", result);
 
-	pthread_mutex_unlock(&mutex);
+	dprintf(log_file, "[%s] %s %s:%d hot swap server added\n", get_time(), storage->disk_name, servers[index].ip, servers[index].port);
 	reconnecting = 0;
 }
 
@@ -174,7 +189,6 @@ static void *try_connect(void *arg)
 
 	// Swap main server.
 	main_server = !main_server;
-	printf("Main server is now: %d\n", main_server);
 
 	int status;
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
@@ -189,7 +203,6 @@ static void *try_connect(void *arg)
 
 	endwait = start + seconds;
 
-	printf("start time is : %s", ctime(&start));
 	while (start < endwait)
 	{
 		/* Do stuff while waiting */
@@ -197,7 +210,9 @@ static void *try_connect(void *arg)
 		if (status != -1)
 		{
 			main_server = !main_server;
-			printf("Reconnected!!! Main server is now: %d\n", main_server);
+			// printf("Reconnected!!! Main server is now: %d\n", main_server);
+			// printf("fd: %d", log_file);
+			dprintf(log_file, "[%s] %s %s:%d reconnected\n", get_time(), storage->disk_name, servers[index].ip, servers[index].port);
 			server_connections[index] = sfd;
 			reconnecting = 0;
 			return;
@@ -209,10 +224,7 @@ static void *try_connect(void *arg)
 
 	// hotswap
 	if (!swapped)
-	{
-		printf("Initiate hotswap...\n");
 		swap_server(index);
-	}
 	else
 		reconnecting = 0;
 }
@@ -221,9 +233,9 @@ static void reconnect(int index)
 {
 	if (reconnecting)
 		return;
+	dprintf(log_file, "[%s] %s %s:%d server declared as lost\n", get_time(), storage->disk_name, servers[index].ip, servers[index].port);
 	reconnecting = 1;
-	pthread_t thread;
-	pthread_create(&thread, NULL, &try_connect, &index);
+	pthread_create(&swap_thread, NULL, &try_connect, &index);
 }
 
 static int send_data(struct request_t request, void *buffer, size_t size, int server)
@@ -253,19 +265,12 @@ static int send_data(struct request_t request, void *buffer, size_t size, int se
 
 static void call_restore(struct request_t request, int index)
 {
-	struct raid_storage_t *s = vector_nth(&storages, storage_index);
-	char *receiver = strdup(vector_nth(&s->servers, !index));
-	char *receiver_ip = strsep(&receiver, ":");
-	int receiver_port = atoi(strsep(&receiver, ":"));
-
-	printf("Receiver: %s:%d\n", receiver_ip, receiver_port);
-
 	// Copy index -> !index
 	struct request_t send_request;
 	send_request.syscall = sys_restore_send;
 	strcpy(send_request.path, request.path);
-	strcpy(send_request.ip, receiver_ip);
-	send_request.port = receiver_port;
+	strcpy(send_request.ip, servers[!index].ip);
+	send_request.port = servers[!index].port;
 
 	write(server_connections[index], &send_request, sizeof(struct request_t));
 }
@@ -320,35 +325,37 @@ static int raid_controller(struct request_t request, void *buffer, size_t size)
 			results[i] = send_data(request, buffer, size, i);
 	}
 
-	if (request.syscall == sys_open)
-	{
-		if (results[0] == 0 && results[1] != 0 && results[1] != -no_connection)
-		{
-			call_restore(request, 0);
-			return results[0];
-		}
-		else if (results[1] == 0 && results[0] != 0 && results[0] != -no_connection)
-		{
-			call_restore(request, 1);
-			return results[1];
-		}
-	}
-
 	for (i = 0; i < server_count; i++)
 		if (results[i] == -no_connection)
 		{
 			reconnect(i);
 			main_server = !i;
+			results[i] == results[!i];
 		}
 
-	printf("%d %d %d\n\n", results[0], results[1], main_server);
+	if (request.syscall == sys_open)
+	{
+		if (results[main_server] == 0 && results[!main_server] != 0 && results[!main_server] != -no_connection)
+		{
+			call_restore(request, main_server);
+			dprintf(log_file, "[%s] %s restoring %s on %s:%d from %s:%d\n", get_time(), storage->disk_name, request.path, servers[main_server].ip, servers[main_server].port, servers[!main_server].ip, servers[!main_server].port);
+			return results[main_server];
+		}
+		else if (results[!main_server] == 0 && results[main_server] != 0 && results[main_server] != -no_connection)
+		{
+			call_restore(request, !main_server);
+			dprintf(log_file, "[%s] %s restoring %s on %s:%d from %s:%d\n", get_time(), storage->disk_name, request.path, servers[!main_server].ip, servers[!main_server].port, servers[main_server].ip, servers[main_server].port);
+			return results[!main_server];
+		}
+	}
+
+	// printf("%d %d %d\n\n", results[0], results[1], main_server);
 
 	return results[main_server];
 }
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
 {
-	printf("%s: %s \n", "getattr", path);
 	struct request_t request;
 	request.syscall = sys_getattr;
 	strcpy(request.path, path);
@@ -360,7 +367,6 @@ static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_in
 
 static int net_mkdir(const char *path, mode_t mode)
 {
-	printf("%s\n", "mkdir");
 	struct request_t request;
 	request.syscall = sys_mkdir;
 	strcpy(request.path, path);
@@ -371,7 +377,6 @@ static int net_mkdir(const char *path, mode_t mode)
 
 static int net_unlink(const char *path)
 {
-	printf("%s\n", "unlink");
 	struct request_t request;
 	request.syscall = sys_unlink;
 	strcpy(request.path, path);
@@ -381,7 +386,6 @@ static int net_unlink(const char *path)
 
 static int net_rmdir(const char *path)
 {
-	printf("%s\n", "rmdir");
 	struct request_t request;
 	request.syscall = sys_rmdir;
 	strcpy(request.path, path);
@@ -391,7 +395,6 @@ static int net_rmdir(const char *path)
 
 static int net_rename(const char *path, const char *new_path)
 {
-	printf("%s\n", "rename");
 	struct request_t request;
 	request.syscall = sys_rename;
 	strcpy(request.path, path);
@@ -402,7 +405,6 @@ static int net_rename(const char *path, const char *new_path)
 
 static int net_link(const char *path, const char *new_path)
 {
-	printf("%s\n", "link");
 	struct request_t request;
 	request.syscall = sys_link;
 	strcpy(request.path, path);
@@ -413,8 +415,6 @@ static int net_link(const char *path, const char *new_path)
 
 static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-	printf("%s\n", "chmod");
-
 	struct request_t request;
 	request.syscall = sys_chmod;
 	strcpy(request.path, path);
@@ -426,8 +426,6 @@ static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
 {
-	printf("%s\n", "truncate");
-
 	struct request_t request;
 	request.syscall = sys_truncate;
 	strcpy(request.path, path);
@@ -440,8 +438,6 @@ static int net_truncate(const char *path, off_t offset, struct fuse_file_info *f
 
 static int net_open(const char *path, struct fuse_file_info *fi)
 {
-	printf("%s\n", "open");
-
 	struct request_t request;
 	request.syscall = sys_open;
 	strcpy(request.path, path);
@@ -523,7 +519,7 @@ static int rw_raid_controller(struct request_t request, char *read_buffer, char 
 	{
 		for (i = 0; i < server_count; i++)
 		{
-			printf("Reading from: server %d\n", main_server);
+			// printf("Reading from: server %d\n", main_server);
 			data[main_server].request = request;
 			data[main_server].read_buffer = read_buffer;
 			data[main_server].write_buffer = write_buffer;
@@ -555,15 +551,11 @@ static int rw_raid_controller(struct request_t request, char *read_buffer, char 
 			pthread_join(threads[i], (void **)&results[i]);
 	}
 
-	printf("SOSOOOOOOOOOO: %d %d\n", results[0], results[1]);
-
 	return results[main_server];
 }
 
 static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-	printf("%s\n", "read");
-
 	struct request_t request;
 	request.syscall = sys_read;
 	strcpy(request.path, path);
@@ -576,11 +568,6 @@ static int net_read(const char *path, char *buffer, size_t size, off_t offset, s
 
 static int net_write(const char *path, const char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
 {
-	printf("%s\n", "write");
-	// printf("%s\n", buffer);
-	// printf("len: %d\n", strlen((char *)buffer));
-	// printf("size: %d\n", size);
-
 	struct request_t request;
 	request.syscall = sys_write;
 	strcpy(request.path, path);
@@ -598,8 +585,6 @@ static int net_write(const char *path, const char *buffer, size_t size, off_t of
 
 static int net_release(const char *path, struct fuse_file_info *fi)
 {
-	printf("%s: %s \n", "release", path);
-
 	struct request_t request;
 	request.syscall = sys_release;
 	strcpy(request.path, path);
@@ -616,8 +601,6 @@ static int net_getxattr(const char *path, const char *name, const char *value, s
 
 static int net_opendir(const char *path, struct fuse_file_info *fi)
 {
-	printf("%s: %s \n", "opendir", path);
-
 	struct request_t request;
 	request.syscall = sys_opendir;
 	strcpy(request.path, path);
@@ -628,8 +611,6 @@ static int net_opendir(const char *path, struct fuse_file_info *fi)
 
 static int net_readdir(const char *path, void *buffer, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *fi)
 {
-	printf("%s: %s \n", "readdir", path);
-
 	struct request_t request;
 	request.syscall = sys_readdir;
 	strcpy(request.path, path);
@@ -657,8 +638,6 @@ static int net_releasedir(const char *path, struct fuse_file_info *fi)
 
 static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 {
-	printf("%s: %s \n", "create", path);
-
 	struct request_t request;
 	request.syscall = sys_create;
 	strcpy(request.path, path);
@@ -703,22 +682,12 @@ int main(int argc, char *argv[])
 	vector_new(&storages, sizeof(struct raid_storage_t), NULL, 2);
 	parse_config((char *)argv[1], &storages);
 
-	// fprintf(stdout, "%s\n", config.error_log);
-	// fprintf(stdout, "%s\n", config.cache_size);
-	// fprintf(stdout, "%s\n", config.cache_replacement);
-	// fprintf(stdout, "%d\n", config.timeout);
-
-	struct raid_storage_t *s = vector_nth(&storages, storage_index);
-	// fprintf(stdout, "%s\n", s->disk_name);
-	// fprintf(stdout, "%s\n", s->mount_point);
-	// fprintf(stdout, "%s\n", s->hot_swap);
-	// fprintf(stdout, "%d\n", s->raid);
-	// vector_map(&s->servers, &print_fn, NULL);
+	storage = vector_nth(&storages, storage_index);
 
 	int arg = 4;
 	char *args[arg + 1];
 	args[0] = "./server";
-	args[1] = s->mount_point;
+	args[1] = storage->mount_point;
 	args[2] = "-f";
 	args[3] = "-s";
 	args[4] = NULL;
@@ -726,19 +695,18 @@ int main(int argc, char *argv[])
 	size_t i;
 	for (i = 0; i < 2; i++)
 	{
-		char *server_string = strdup(vector_nth(&s->servers, i));
+		char *server_string = strdup(vector_nth(&storage->servers, i));
 		servers[i].ip = strdup(strsep(&server_string, ":"));
 		servers[i].port = atoi(strsep(&server_string, ":"));
 	}
 
 	char *hs = malloc(MAX_IP_LENGTH);
-	strcpy(hs, s->hot_swap);
+	strcpy(hs, storage->hot_swap);
 	servers[2].ip = strdup(strsep(&hs, ":"));
 	servers[2].port = atoi(strsep(&hs, ":"));
 	free(hs);
 
-	// for (i = 0; i < 3; i++)
-	// 	printf("%d: %s:%d\n", i, servers[i].ip, servers[i].port);
+	log_file = open(config.error_log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
 
 	for (i = 0; i < 2; i++)
 	{
@@ -749,19 +717,13 @@ int main(int argc, char *argv[])
 		addr.sin_port = htons(servers[i].port);
 		addr.sin_addr.s_addr = inet_addr(servers[i].ip);
 
-		printf("Connecting to: %s:%d\n", servers[i].ip, servers[i].port);
+		dprintf(log_file, "[%s] %s:%d open connection\n", get_time(), servers[i].ip, servers[i].port);
 		connect(server_connections[i], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	}
 
 	main_server = 0;
 	swapped = 0;
 	pthread_mutex_init(&mutex, NULL);
-	// struct request_t r;
-	// raid_controller(r, NULL, 0);
-
-	// struct request_t request;
-	// request.syscall = sys_swap_send;
-	// raid_controller(request, NULL, 0);
 
 	return fuse_main(arg, args, &net_oper, NULL);
 }

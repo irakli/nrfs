@@ -44,6 +44,7 @@ static int server_connections[2];
 static struct server_t servers[3];
 static int main_server;
 static pthread_mutex_t mutex;
+static int swapped;
 
 static void parse_config(const char *config_file, vector *storages)
 {
@@ -129,41 +130,44 @@ static void parse_config(const char *config_file, vector *storages)
 	fclose(file);
 }
 
+int reconnecting = 0;
 static int swap_server(int index)
 {
 	pthread_mutex_lock(&mutex);
-	struct server_t temp = servers[1];
-	servers[1] = servers[2];
+	swapped = 1;
+
+	struct server_t temp = servers[index];
+	servers[index] = servers[2];
 	servers[2] = temp;
 
-	printf("Swapping\n");
-	// TODO: ჩაიხურა და თავიდან გავხსნა. lock.
+	int i;
+	for (i = 0; i < 2; i++)
+		printf("%d - %s:%d\n", i, servers[i].ip, servers[i].port);
 
-	server_connections[!main_server] = socket(AF_INET, SOCK_STREAM, 0);
+	server_connections[index] = socket(AF_INET, SOCK_STREAM, 0);
 	struct sockaddr_in addr;
 	addr.sin_family = AF_INET;
-	addr.sin_port = htons(servers[2].port);
-	addr.sin_addr.s_addr = inet_addr(servers[2].ip);
+	addr.sin_port = htons(servers[index].port);
+	addr.sin_addr.s_addr = inet_addr(servers[index].ip);
 
-	printf("Connecting to: %s:%d\n", servers[2].ip, servers[2].port);
-	connect(server_connections[!main_server], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+	printf("Connecting to: %s:%d\n", servers[index].ip, servers[index].port);
+	connect(server_connections[index], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
 	struct request_t request;
 	request.syscall = sys_swap_send;
-	strcpy(request.ip, servers[2].ip);
-	request.port = servers[2].port;
+	strcpy(request.ip, servers[index].ip);
+	request.port = servers[index].port;
 
-	write(server_connections[main_server], &request, sizeof(struct request_t));
+	write(server_connections[!index], &request, sizeof(struct request_t));
 	int result;
 
-	// hot_Swap-იდან უნდა წავიკითხო, ეხლა ცოცხლიდან ვკითხულობ.
-	read(server_connections[main_server], &result, sizeof(result));
+	read(server_connections[!index], &result, sizeof(result));
 	printf("AEEEEEE: %d\n", result);
 
 	pthread_mutex_unlock(&mutex);
+	reconnecting = 0;
 }
 
-int reconnecting = 0;
 static void *try_connect(void *arg)
 {
 	int index = *(int *)arg;
@@ -181,7 +185,7 @@ static void *try_connect(void *arg)
 
 	time_t endwait;
 	time_t start = time(NULL);
-	time_t seconds = 120; //config.timeout; // end loop after this time has elapsed
+	time_t seconds = config.timeout; // end loop after this time has elapsed
 
 	endwait = start + seconds;
 
@@ -204,8 +208,13 @@ static void *try_connect(void *arg)
 	}
 
 	// hotswap
-	printf("Initiate hotswap...\n");
-	reconnecting = 0;
+	if (!swapped)
+	{
+		printf("Initiate hotswap...\n");
+		swap_server(index);
+	}
+	else
+		reconnecting = 0;
 }
 
 static void reconnect(int index)
@@ -326,8 +335,11 @@ static int raid_controller(struct request_t request, void *buffer, size_t size)
 	}
 
 	for (i = 0; i < server_count; i++)
-		if (results[i] != 0)
+		if (results[i] == -no_connection)
+		{
 			reconnect(i);
+			main_server = !i;
+		}
 
 	printf("%d %d %d\n\n", results[0], results[1], main_server);
 
@@ -742,6 +754,7 @@ int main(int argc, char *argv[])
 	}
 
 	main_server = 0;
+	swapped = 0;
 	pthread_mutex_init(&mutex, NULL);
 	// struct request_t r;
 	// raid_controller(r, NULL, 0);

@@ -2,17 +2,18 @@
 #include <stdio.h>
 #include <sys/types.h>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <sys/xattr.h>
 #include <string.h>
-#include <netinet/in.h>
+#include <sys/sendfile.h>
 #include <netinet/ip.h> /* superset of previous */
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sys/wait.h>
 #include <dirent.h>
-#include <sys/sendfile.h>
 
 #define BACKLOG 1
 
@@ -362,50 +363,55 @@ static void net_swap_receive(const char *path, const char *fpath, size_t size, i
 
 static int net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
+	printf("Create tar bliad.\n");
 	// Create tar.
 	if (fork() == 0)
 	{
 		execl("/bin/tar", "tar", "--xattrs", "--xattrs-include=*", "-czf", path, fpath, NULL);
-		exit(0);
 	}
+	else
+	{
+		int process_status;
+		wait(&process_status);
 
-	// Get file size.
-	struct stat stbuf;
-	stat(path, &stbuf);
-	printf("File size: %zu\n", stbuf.st_size);
+		// Get file size.
+		struct stat stbuf;
+		stat(path, &stbuf);
+		printf("File size: %zu\n", stbuf.st_size);
 
-	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+		int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
-	struct sockaddr_in addr;
-	addr.sin_family = AF_INET;
-	addr.sin_port = htons(port);
-	addr.sin_addr.s_addr = inet_addr(ip);
+		struct sockaddr_in addr;
+		addr.sin_family = AF_INET;
+		addr.sin_port = htons(port);
+		addr.sin_addr.s_addr = inet_addr(ip);
 
-	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+		connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
-	// Create request.
-	struct request_t request;
-	request.syscall = sys_swap_receive;
-	request.size = stbuf.st_size;
+		// Create request.
+		struct request_t request;
+		request.syscall = sys_swap_receive;
+		request.size = stbuf.st_size;
 
-	printf("path: %s, fpath: %s. %s:%d (%zu).\n", path, fpath, ip, port, request.size);
+		printf("path: %s, fpath: %s. %s:%d (%zu).\n", path, fpath, ip, port, request.size);
 
-	// Send the request.
-	write(sfd, &request, sizeof(request));
+		// Send the request.
+		write(sfd, &request, sizeof(request));
 
-	int fd = open(path, O_RDWR);
-	off_t offset = 0;
-	int sent, remaining = stbuf.st_size;
-	while (((sent = sendfile(sfd, fd, &offset, BUFSIZ)) > 0) && (remaining > 0))
-		remaining -= sent;
+		int fd = open(path, O_RDWR);
+		off_t offset = 0;
+		int sent, remaining = stbuf.st_size;
+		while (((sent = sendfile(sfd, fd, &offset, BUFSIZ)) > 0) && (remaining > 0))
+			remaining -= sent;
 
-	printf("Removing...\n");
-	unlink(path);
+		printf("Removing...\n");
+		unlink(path);
 
-	int status;
-	read(sfd, &status, sizeof(status));
+		int status;
+		read(sfd, &status, sizeof(status));
 
-	return status;
+		return status;
+	}
 }
 
 /* Send the file located at the given path to the given server. */
@@ -516,7 +522,7 @@ static void *client_handler(void *cf)
 		int result = 0;
 		char *fullpath = concat(config.mount_point, request.path);
 
-		printf("Called syscall: %d %s\n", request.syscall, fullpath);
+		printf("Called syscall: %d \n", request.syscall);
 
 		switch (request.syscall)
 		{

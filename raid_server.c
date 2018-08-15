@@ -334,37 +334,46 @@ static int net_create(const char *path, mode_t mode, struct fuse_file_info *fi)
 
 static void net_swap_receive(const char *path, const char *fpath, size_t size, int cfd)
 {
+	printf("vigeb ufroso %zu\n", size);
+
 	// Receive the file.
-	int fd = open(path, O_CREAT | O_RDWR);
+	int fd = open(path, O_CREAT | O_RDWR, 0777);
+	// chmod(path, S_IXOTH | S_IWOTH | S_IROTH);
 
 	char buffer[BUFSIZ];
 	int length, remaining = size;
 
-	while (((length = recv(cfd, buffer, BUFSIZ, 0)) > 0) && (remaining > 0))
+	while ((remaining > 0) && ((length = recv(cfd, buffer, BUFSIZ, 0)) > 0))
 	{
 		write(fd, buffer, length);
 		remaining -= length;
-		fprintf(stdout, "Receive %d bytes and we hope : %d bytes\n", length, remaining);
+		fprintf(stdout, "Receive %d bytes and we hope: %d bytes\n", length, remaining);
 	}
+	close(fd);
 
 	// Extract contents.
 	if (fork() == 0)
 	{
-		execl("/bin/tar", "tar", "--strip-components", "1", "-xzf", path, "-C", fpath, NULL);
+		printf("Unpacking... %s to %s\n", path, fpath);
+		execl("/bin/tar", "tar", "--strip-components", "1", "--xattrs", "--xattrs-include=*", "-xzf", path, "-C", fpath, NULL);
 		exit(0);
 	}
 }
 
-static void net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
+static int net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LENGTH], int port)
 {
-	printf("Hello from the other side.\n");
-
 	// Create tar.
 	if (fork() == 0)
 	{
-		execl("/bin/tar", "tar", "-czf", path, fpath, NULL);
+		execl("/bin/tar", "tar", "--xattrs", "--xattrs-include=*", "-czf", path, fpath, NULL);
 		exit(0);
 	}
+
+	// Get file size.
+	struct stat stbuf;
+	stat(path, &stbuf);
+	printf("File size: %zu\n", stbuf.st_size);
+
 	int sfd = socket(AF_INET, SOCK_STREAM, 0);
 
 	struct sockaddr_in addr;
@@ -374,23 +383,29 @@ static void net_swap_send(const char *path, const char *fpath, char ip[MAX_IP_LE
 
 	connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 
-	// Get file size.
-	struct stat stbuf;
-	stat(fpath, &stbuf);
-
 	// Create request.
 	struct request_t request;
 	request.syscall = sys_swap_receive;
 	request.size = stbuf.st_size;
-	strcpy(request.path, path);
 
-	int fd = open(path, O_RDONLY);
+	printf("path: %s, fpath: %s. %s:%d (%zu).\n", path, fpath, ip, port, request.size);
+
+	// Send the request.
+	write(sfd, &request, sizeof(request));
+
+	int fd = open(path, O_RDWR);
 	off_t offset = 0;
 	int sent, remaining = stbuf.st_size;
 	while (((sent = sendfile(sfd, fd, &offset, BUFSIZ)) > 0) && (remaining > 0))
 		remaining -= sent;
 
+	printf("Removing...\n");
 	unlink(path);
+
+	int status;
+	read(sfd, &status, sizeof(status));
+
+	return status;
 }
 
 /* Send the file located at the given path to the given server. */
@@ -455,7 +470,7 @@ static void net_restore_receive(const char *path, size_t size, mode_t mode, int 
 	char buffer[BUFSIZ];
 	int length, remaining = size;
 
-	while (((length = recv(cfd, buffer, BUFSIZ, 0)) > 0) && (remaining > 0))
+	while ((remaining > 0) && ((length = recv(cfd, buffer, BUFSIZ, 0)) > 0))
 	{
 		write(fd, buffer, length);
 		remaining -= length;
@@ -665,12 +680,17 @@ static void *client_handler(void *cf)
 		}
 		case sys_swap_send:
 		{
-			net_swap_send("swap", config.mount_point, config.ip, config.port);
+			result = net_swap_send("swap", config.mount_point, request.ip, request.port);
+			write(cfd, &result, sizeof(result));
+			printf("Finishing\n");
 			break;
 		}
 		case sys_swap_receive:
 		{
-			net_swap_receive("swap", config.mount_point, request.size, cfd);
+			net_swap_receive("swap2", config.mount_point, request.size, cfd);
+			printf("Finishing\n");
+			result = 69;
+			write(cfd, &result, sizeof(result));
 			break;
 		}
 		default:

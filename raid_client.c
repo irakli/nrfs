@@ -11,6 +11,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <pthread.h>
+#include <time.h>
 #include "vector.h"
 
 struct client_config_t
@@ -37,12 +38,14 @@ struct server_t
 };
 
 static vector storages;
+struct client_config_t config;
 static int storage_index;
 static int server_connections[2];
 static struct server_t servers[3];
 static int main_server;
+static pthread_mutex_t mutex;
 
-static void parse_config(const char *config_file, vector *storages, struct client_config_t *config)
+static void parse_config(const char *config_file, vector *storages)
 {
 	FILE *file = fopen(config_file, "r");
 	if (file == NULL)
@@ -55,22 +58,22 @@ static void parse_config(const char *config_file, vector *storages, struct clien
 	/* Error log. */
 	fgets(line, sizeof(line), file);
 	line[strlen(line) - 1] = '\0';
-	strncpy(config->error_log, line + strlen("errorlog = "), strlen(line) - strlen("errorlog = ") + 1);
+	strncpy(config.error_log, line + strlen("errorlog = "), strlen(line) - strlen("errorlog = ") + 1);
 
 	/* Cache size. */
 	fgets(line, sizeof(line), file);
 	line[strlen(line) - 1] = '\0';
-	strncpy(config->cache_size, line + strlen("cache_size = "), strlen(line) - strlen("cache_size = ") + 1);
+	strncpy(config.cache_size, line + strlen("cache_size = "), strlen(line) - strlen("cache_size = ") + 1);
 
 	/* Cache replacement algorithm. */
 	fgets(line, sizeof(line), file);
 	line[strlen(line) - 1] = '\0';
-	strncpy(config->cache_replacement, line + strlen("cache_replacment = "), strlen(line) - strlen("cache_replacment = ") + 1);
+	strncpy(config.cache_replacement, line + strlen("cache_replacment = "), strlen(line) - strlen("cache_replacment = ") + 1);
 
 	/* Timeout. */
 	fgets(line, sizeof(line), file);
 	line[strlen(line) - 1] = '\0';
-	config->timeout = atoi(line + strlen("timeout = "));
+	config.timeout = atoi(line + strlen("timeout = "));
 
 	while (fgets(line, sizeof(line), file))
 	{
@@ -124,6 +127,94 @@ static void parse_config(const char *config_file, vector *storages, struct clien
 	}
 
 	fclose(file);
+}
+
+static int swap_server(int index)
+{
+	pthread_mutex_lock(&mutex);
+	struct server_t temp = servers[1];
+	servers[1] = servers[2];
+	servers[2] = temp;
+
+	printf("Swapping\n");
+	// TODO: ჩაიხურა და თავიდან გავხსნა. lock.
+
+	server_connections[!main_server] = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(servers[2].port);
+	addr.sin_addr.s_addr = inet_addr(servers[2].ip);
+
+	printf("Connecting to: %s:%d\n", servers[2].ip, servers[2].port);
+	connect(server_connections[!main_server], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+
+	struct request_t request;
+	request.syscall = sys_swap_send;
+	strcpy(request.ip, servers[2].ip);
+	request.port = servers[2].port;
+
+	write(server_connections[main_server], &request, sizeof(struct request_t));
+	int result;
+
+	// hot_Swap-იდან უნდა წავიკითხო, ეხლა ცოცხლიდან ვკითხულობ.
+	read(server_connections[main_server], &result, sizeof(result));
+	printf("AEEEEEE: %d\n", result);
+
+	pthread_mutex_unlock(&mutex);
+}
+
+int reconnecting = 0;
+static void *try_connect(void *arg)
+{
+	int index = *(int *)arg;
+
+	// Swap main server.
+	main_server = !main_server;
+	printf("Main server is now: %d\n", main_server);
+
+	int status;
+	int sfd = socket(AF_INET, SOCK_STREAM, 0);
+	struct sockaddr_in addr;
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(servers[index].port);
+	addr.sin_addr.s_addr = inet_addr(servers[index].ip);
+
+	time_t endwait;
+	time_t start = time(NULL);
+	time_t seconds = 120; //config.timeout; // end loop after this time has elapsed
+
+	endwait = start + seconds;
+
+	printf("start time is : %s", ctime(&start));
+	while (start < endwait)
+	{
+		/* Do stuff while waiting */
+		status = connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
+		if (status != -1)
+		{
+			main_server = !main_server;
+			printf("Reconnected!!! Main server is now: %d\n", main_server);
+			server_connections[index] = sfd;
+			reconnecting = 0;
+			return;
+		}
+
+		sleep(1); // sleep 1s.
+		start = time(NULL);
+	}
+
+	// hotswap
+	printf("Initiate hotswap...\n");
+	reconnecting = 0;
+}
+
+static void reconnect(int index)
+{
+	if (reconnecting)
+		return;
+	reconnecting = 1;
+	pthread_t thread;
+	pthread_create(&thread, NULL, &try_connect, &index);
 }
 
 static int send_data(struct request_t request, void *buffer, size_t size, int server)
@@ -182,9 +273,14 @@ static int raid_controller(struct request_t request, void *buffer, size_t size)
 	{
 		if (request.syscall == sys_getattr)
 		{
-			results[i] = send_data(request, buffer, size, i);
-			if (results[i] == 0)
+			results[main_server] = send_data(request, buffer, size, main_server);
+			if (results[main_server] == 0)
 				return 0;
+			else
+			{
+				results[main_server] = send_data(request, buffer, size, !main_server);
+				return results[main_server];
+			}
 		}
 		else if (request.syscall == sys_readdir)
 		{
@@ -196,16 +292,18 @@ static int raid_controller(struct request_t request, void *buffer, size_t size)
 
 			// printf("Comparing: \n%s \nwith \n%s\n", first_buffer, second_buffer);
 
-			if (strlen(first_buffer) > strlen(second_buffer))
+			if (results[0] != no_connection && strlen(first_buffer) > strlen(second_buffer))
 			{
 				strcpy(buffer, first_buffer);
 				return results[0];
 			}
-			else
+			else if (results[1] != no_connection && strlen(first_buffer) < strlen(second_buffer))
 			{
 				strcpy(buffer, second_buffer);
 				return results[1];
 			}
+			else
+				strcpy(buffer, first_buffer);
 
 			break;
 		}
@@ -227,10 +325,13 @@ static int raid_controller(struct request_t request, void *buffer, size_t size)
 		}
 	}
 
-	if (results[0] == -no_connection)
-		return results[1];
+	for (i = 0; i < server_count; i++)
+		if (results[i] != 0)
+			reconnect(i);
 
-	return results[0];
+	printf("%d %d %d\n\n", results[0], results[1], main_server);
+
+	return results[main_server];
 }
 
 static int net_getattr(const char *path, struct stat *stbuf, struct fuse_file_info *fi)
@@ -337,10 +438,6 @@ static int net_open(const char *path, struct fuse_file_info *fi)
 	return raid_controller(request, NULL, 0);
 }
 
-static int swap_server()
-{
-}
-
 struct thread_rw_data
 {
 	struct request_t request;
@@ -363,7 +460,10 @@ static int read_write(void *arg)
 
 	int server_status = connect(sfd, (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	if (server_status == -1)
+	{
+		close(sfd);
 		return -no_connection;
+	}
 
 	int status = -errno;
 	if (data.request.syscall == sys_read)
@@ -412,18 +512,18 @@ static int rw_raid_controller(struct request_t request, char *read_buffer, char 
 		for (i = 0; i < server_count; i++)
 		{
 			printf("Reading from: server %d\n", main_server);
-			data[i].request = request;
-			data[i].read_buffer = read_buffer;
-			data[i].write_buffer = write_buffer;
-			data[i].ip = servers[i].ip;
-			data[i].port = servers[i].port;
+			data[main_server].request = request;
+			data[main_server].read_buffer = read_buffer;
+			data[main_server].write_buffer = write_buffer;
+			data[main_server].ip = servers[main_server].ip;
+			data[main_server].port = servers[main_server].port;
 
-			results[i] = read_write(&data[i]);
+			results[main_server] = read_write(&data[main_server]);
 
-			if (results[i] != -no_connection)
+			if (results[main_server] != -no_connection)
 				break;
 			else
-				main_server == !main_server;
+				reconnect(main_server);
 		}
 	}
 	else
@@ -443,11 +543,9 @@ static int rw_raid_controller(struct request_t request, char *read_buffer, char 
 			pthread_join(threads[i], (void **)&results[i]);
 	}
 
-	// printf("SOSOOOOOOOOOO: %d %d\n", return_values[0], return_values[1]);
-	if (results[0] == -no_connection)
-		return results[1];
+	printf("SOSOOOOOOOOOO: %d %d\n", results[0], results[1]);
 
-	return results[0];
+	return results[main_server];
 }
 
 static int net_read(const char *path, char *buffer, size_t size, off_t offset, struct fuse_file_info *fi)
@@ -590,10 +688,8 @@ int main(int argc, char *argv[])
 		exit(EXIT_FAILURE);
 	}
 
-	struct client_config_t config;
-
 	vector_new(&storages, sizeof(struct raid_storage_t), NULL, 2);
-	parse_config((char *)argv[1], &storages, &config);
+	parse_config((char *)argv[1], &storages);
 
 	// fprintf(stdout, "%s\n", config.error_log);
 	// fprintf(stdout, "%s\n", config.cache_size);
@@ -641,11 +737,12 @@ int main(int argc, char *argv[])
 		addr.sin_port = htons(servers[i].port);
 		addr.sin_addr.s_addr = inet_addr(servers[i].ip);
 
-		printf("Connecting: %s:%d\n", servers[i].ip, servers[i].port);
+		printf("Connecting to: %s:%d\n", servers[i].ip, servers[i].port);
 		connect(server_connections[i], (struct sockaddr *)&addr, sizeof(struct sockaddr_in));
 	}
 
 	main_server = 0;
+	pthread_mutex_init(&mutex, NULL);
 	// struct request_t r;
 	// raid_controller(r, NULL, 0);
 

@@ -1,19 +1,19 @@
 all: server client
 
 server: raid_server.o vector.o
-	gcc raid_server.o vector.o `pkg-config fuse --cflags --libs` -o server.out -lpthread -lcrypto
+	gcc -w raid_server.o vector.o `pkg-config fuse --cflags --libs` -o server.out -lpthread -lcrypto
 
 client: raid_client.o vector.o
-	gcc raid_client.o vector.o `pkg-config fuse --cflags --libs` -o client.out -lcrypto
+	gcc -w raid_client.o vector.o `pkg-config fuse --cflags --libs` -o client.out -lcrypto
 
 raid_server.o: raid_server.c raid.h
-	gcc `pkg-config fuse --cflags --libs` -c raid_server.c
+	gcc -w `pkg-config fuse --cflags --libs` -c raid_server.c
 
 raid_client.o: raid_client.c raid.h
-	gcc `pkg-config fuse --cflags --libs` -c raid_client.c
+	gcc -w `pkg-config fuse --cflags --libs` -c raid_client.c
 
 vector.o: vector.c vector.h
-	gcc -c vector.c
+	gcc -w -c vector.c
 
 clean:
 	rm *.o server.out client.out

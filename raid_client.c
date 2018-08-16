@@ -14,6 +14,7 @@
 #include <time.h>
 #include <sys/stat.h>
 #include <fcntl.h>
+#include <sys/epoll.h>
 #include "vector.h"
 
 struct client_config_t
@@ -50,6 +51,8 @@ static pthread_mutex_t mutex;
 static pthread_t swap_thread;
 static int swapped;
 static int log_file;
+static struct epoll_event ev;
+static int epoll_socket;
 
 static void parse_config(const char *config_file, vector *storages)
 {
@@ -424,6 +427,18 @@ static int net_chmod(const char *path, mode_t mode, struct fuse_file_info *fi)
 	return raid_controller(request, NULL, 0);
 }
 
+static int net_chown(const char *path, mode_t mode, struct fuse_file_info *fi)
+{
+	struct request_t request;
+	request.syscall = sys_chmod;
+	strcpy(request.path, path);
+	request.mode = mode;
+	request.fi = *fi;
+	epoll_wait(epoll_socket, &ev, 3, 0);
+
+	return 0;
+}
+
 static int net_truncate(const char *path, off_t offset, struct fuse_file_info *fi)
 {
 	struct request_t request;
@@ -655,6 +670,7 @@ struct fuse_operations net_oper = {
 	.rename = net_rename,
 	.link = net_link,
 	.chmod = net_chmod,
+	.chown = net_chown,
 	.truncate = net_truncate,
 	.open = net_open,
 	.read = net_read,
@@ -707,6 +723,14 @@ int main(int argc, char *argv[])
 	free(hs);
 
 	log_file = open(config.error_log, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+
+	// Epoll
+	epoll_socket = 47000;
+	ev.events = EPOLLIN;
+	ev.data.fd = epoll_socket;
+	int epoll_fd = epoll_create(vector_length(&storage->servers));
+	epoll_ctl(epoll_fd, EPOLL_CTL_ADD, epoll_socket, &ev);
+	// epoll_wait(epoll_socket, &ev, 2, 0);
 
 	for (i = 0; i < 2; i++)
 	{
